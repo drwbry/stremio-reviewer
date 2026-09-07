@@ -177,3 +177,41 @@ Status key: **open** (still needs doing) · **resolved** (done, kept for history
   `preserve`, and the `_write_snapshot` `SecurityError` re-raise. Add direct
   unit tests for these if the per-module coverage gate (also open, cross-cutting)
   is ever enforced strictly.
+
+---
+
+## Phase 6 — AIOStreams backup adapter and manual promotion (BLOCKED — not started)
+
+- **blocked — Phase 6 needs a real sanitized AIOStreams config backup.**
+  SPEC §13 Phase 6 opens with a hard prerequisite: *"Obtain a native AIOStreams
+  JSON backup with credentials excluded. Do not infer its schema from the
+  Stremio add-on collection."* and requires the parser be *"based on an actual
+  sanitized sample and current upstream documentation/source."* No such sample
+  is in the repo, and the SPEC §16 execution protocol says to stop with a
+  documented blocker rather than guess a wire/format contract. Phase 5 finished
+  and was committed; Phase 6 has not been started.
+
+  To unblock, provide (outside of any assistant chat if it helps you feel safe
+  about it, though the sample must be **credential-free**):
+
+  1. A native AIOStreams **addon config** export — the JSON you get from the
+     AIOStreams configuration UI's backup/export button (not the AIOStreams
+     *server* `/dashboard/settings` export, which is a different thing). Strip
+     every debrid key, password, API token, and the config UUID/hash before
+     sharing. Keep the structure, key names, nesting, version marker, and any
+     `exportedAt` / `version` fields intact.
+  2. The AIOStreams version that produced it.
+  3. Whether your AIOStreams instance exposes a **documented, stable** import
+     API. Observed upstream (`Viren070/AIOStreams`, `main` @ 2026-09-06):
+     `packages/frontend/.../settings/_components/import-settings-modal.tsx` +
+     `settings/queries.ts` show an import flow shaped as
+     `{ settings: {...}, maskedSecretKeys: [...], exportedAt, version }` posted
+     to `PATCH /dashboard/settings` — but that is the **server** settings
+     surface, not the per-user addon config. Per the Phase 6 restriction,
+     import stays a manual UI step unless a stable addon-config import API is
+     confirmed; automating browser login or reverse-engineering credential
+     submission is out of scope.
+
+  Until then: `aiostreams` remains a docstring-only stub, `stremioctl
+  aiostreams *` commands are not implemented, and v1 "done" (SPEC §15) is not
+  reachable.
