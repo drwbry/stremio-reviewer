@@ -1,0 +1,6 @@
+{
+  "manifest": {
+    "id": "synthetic.invalid",
+    "name": "Invalid root fixture"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stremioctl.invalid/schemas/backup-report-v1.schema.json",
+  "title": "stremioctl backup report v1",
+  "description": "Shape of the --json output emitted by `backup inspect` and `backup validate`. Strict at the top level, permissive inside so the report can grow without breaking the contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "report", "descriptorCount", "findings"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "report": {"enum": ["inspect", "validate"]},
+    "descriptorCount": {"type": "integer", "minimum": 0},
+    "collectionFingerprint": {"type": "string"},
+    "transports": {"type": "object"},
+    "descriptors": {"type": "array"},
+    "valid": {"type": "boolean"},
+    "errorCount": {"type": "integer", "minimum": 0},
+    "warningCount": {"type": "integer", "minimum": 0},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "code", "message"],
+        "properties": {
+          "severity": {"enum": ["error", "warning"]},
+          "code": {"type": "string"},
+          "message": {"type": "string"},
+          "descriptorIndex": {"type": "integer", "minimum": 0},
+          "manifestId": {"type": "string"},
+          "endpoint": {"type": "string"}
+        }
+      }
+    }
+  }
+}

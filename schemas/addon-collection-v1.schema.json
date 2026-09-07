@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stremioctl.invalid/schemas/addon-collection-v1.schema.json",
+  "title": "Stremio add-on collection v1",
+  "description": "The load-bearing structural contract only: an array of descriptor objects, each with a manifest object that has a non-empty string id and a non-empty transportUrl string. Every other field - including unknown keys and unusual-but-preservable values such as a null idPrefixes - is left to the semantic checks in stremioctl.validation, which report them as warnings rather than errors.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["manifest", "transportUrl"],
+    "properties": {
+      "manifest": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1}
+        }
+      },
+      "transportUrl": {"type": "string", "minLength": 1}
+    }
+  }
+}

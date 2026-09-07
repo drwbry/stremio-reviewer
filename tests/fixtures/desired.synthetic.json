@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "name": "synthetic",
+  "addons": [],
+  "policy": {
+    "requireHttps": true,
+    "preserveUnmanagedAddons": true
+  }
+}

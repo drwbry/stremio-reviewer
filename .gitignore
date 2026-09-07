@@ -1,0 +1,24 @@
+# Local credential-bearing configuration and exports
+.env
+.env.*
+!.env.example
+.stremioctl/private/
+stremio-addons-backup-*.json
+*.stremio-private.json
+*.auth-key
+*.json:Zone.Identifier
+
+# Python build, test, and editor artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.venv/
+.idea/
+.vscode/

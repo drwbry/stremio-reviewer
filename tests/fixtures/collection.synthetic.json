@@ -1,0 +1,94 @@
+[
+  {
+    "manifest": {
+      "id": "synthetic.catalog",
+      "name": "Synthetic Catalog",
+      "version": "1.0.0",
+      "resources": ["catalog"],
+      "types": ["movie"],
+      "description": "Synthetic fixture only"
+    },
+    "transportName": "synthetic-catalog",
+    "transportUrl": "https://catalog.example.invalid/manifest.json",
+    "flags": {}
+  },
+  {
+    "manifest": {
+      "id": "synthetic.metadata",
+      "name": "Synthetic Metadata",
+      "version": "1.0.0",
+      "resources": ["meta"],
+      "types": ["movie", "series"],
+      "behaviorHints": {"configurable": true}
+    },
+    "transportName": "synthetic-metadata",
+    "transportUrl": "https://metadata.example.invalid/config/SENTINEL_MUST_NOT_LEAK/manifest.json",
+    "flags": {"official": false}
+  },
+  {
+    "manifest": {
+      "id": "synthetic.stream",
+      "name": "Synthetic Stream",
+      "version": "1.0.0",
+      "resources": ["stream"],
+      "types": ["movie"]
+    },
+    "transportName": "synthetic-stream",
+    "transportUrl": "https://stream.example.invalid/manifest.json",
+    "flags": {"protected": false}
+  },
+  {
+    "manifest": {
+      "id": "synthetic.subtitles",
+      "name": "Synthetic Subtitles",
+      "version": "1.0.0",
+      "resources": ["subtitles"],
+      "types": ["movie"]
+    },
+    "transportName": "synthetic-subtitles",
+    "transportUrl": "http://subtitles.example.invalid/manifest.json",
+    "flags": {}
+  },
+  {
+    "manifest": {
+      "id": "synthetic.extra.one",
+      "name": "Synthetic Extra One",
+      "version": "1.0.0",
+      "resources": [],
+      "types": []
+    },
+    "transportUrl": "https://extra-one.example.invalid/manifest.json"
+  },
+  {
+    "manifest": {
+      "id": "synthetic.extra.two",
+      "name": "Synthetic Extra Two",
+      "version": "1.0.0",
+      "resources": [],
+      "types": []
+    },
+    "transportUrl": "https://extra-two.example.invalid/manifest.json"
+  },
+  {
+    "manifest": {
+      "id": "synthetic.extra.three",
+      "name": "Synthetic Extra Three",
+      "version": "1.0.0",
+      "resources": [],
+      "types": []
+    },
+    "transportUrl": "https://extra-three.example.invalid/manifest.json"
+  },
+  {
+    "manifest": {
+      "id": "synthetic.secret",
+      "name": "Synthetic Secret",
+      "version": "1.0.0",
+      "resources": [],
+      "types": [],
+      "contactEmail": "fixture@example.invalid",
+      "settings": {"apiKey": "SENTINEL_NESTED_API_KEY"}
+    },
+    "transportUrl": "https://secret.example.invalid/manifest.json?token=SENTINEL_QUERY_TOKEN"
+  }
+]
