@@ -66,7 +66,7 @@ stderr in redacted form.
 
 See [`docs/data-formats.md`](docs/data-formats.md) for the report, profile, plan,
 and schema details and [`docs/security.md`](docs/security.md) for the privacy
-model.
+model. [`BACKLOG.md`](BACKLOG.md) tracks deferred work and known gaps.
 
 ## Handling raw exports
 
