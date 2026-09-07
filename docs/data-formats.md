@@ -1,6 +1,6 @@
 # Data formats
 
-This document describes the artifacts that Phase 1 reads and writes. All of them
+This document describes the artifacts that Phases 1–2 read and write. All of them
 are plain UTF-8 JSON.
 
 ## Add-on collection (input)
@@ -98,3 +98,120 @@ malformed export (for example a stray non-object entry in the array) is still
 redacted so it can be shared when asking for help. Only two things are refused:
 a non-array root (exit `2`), and an `--out` path that resolves to the input file
 (exit `2`, so the raw export cannot be clobbered).
+
+## Desired profile v1 (`profile` input)
+
+A desired profile is a secret-free statement of the add-on collection you want.
+It is meant to be committable. The structural contract is
+[`schemas/desired-profile-v1.schema.json`](../schemas/desired-profile-v1.schema.json);
+`stremioctl.profiles` adds the semantic rules below.
+
+Top level: `schemaVersion` (`1`), `name` (non-empty string), `addons` (array),
+and an optional `policy` object.
+
+Each `addons` entry:
+
+| Key       | Required | Notes                                                            |
+| --------- | -------- | -------------------------------------------------------------- |
+| `key`     | yes      | Unique local stable name for this entry.                       |
+| `match`   | yes      | `{ "manifestId": "...", "transportFingerprint"?: "<12 hex>" }` |
+| `state`   | yes      | `present` or `absent`. `absent` plans a removal.               |
+| `position`| no       | Target index in the collection *after* removals.               |
+| `endpoint`| no       | Exactly one of `publicUrl` or `secretRef` (see below).         |
+| `manage`  | no       | Subset of `state`, `position`, `endpoint`. Only listed         |
+|           |          | properties are enforced; the rest are advisory.               |
+
+`policy` (all optional, defaults shown): `requireHttps` (`true`),
+`manifestTimeoutSeconds` (`8`, 1–30), `maxConcurrentProbes` (`4`, 1–10),
+`allowPrivateNetwork` (`false`), `preserveUnmanagedAddons` (`true`). The
+network-shaped policy values are recorded now and consumed by Phase 3.
+
+Semantic rules enforced by `profile validate` and `profile diff`:
+
+- `key` values must be unique.
+- Two entries may not select the same target. The target is
+  `(manifestId, transportFingerprint)`, so the same `manifestId` with two
+  distinct fingerprints is allowed.
+- `endpoint.publicUrl` must be an `http(s)` URL. Use it only for a URL you have
+  decided is genuinely public.
+- `endpoint.secretRef` must be `env:NAME` (a valid environment-variable name) or
+  `file:/absolute/path`. **Only the syntax is checked.** The variable is not
+  read, the file is not opened, and the POSIX permission checks from `SPEC.md`
+  section 7.2 happen later, when a phase actually resolves the value.
+- `position` set without `position` in `manage`, `endpoint` set without
+  `endpoint` in `manage`, and extra keys on an `absent` entry are **warnings**,
+  not errors.
+
+`profile init` generates one entry per descriptor with
+`manage: ["state", "position"]` and no `endpoint`. A transport URL from the
+source export is written into `endpoint.publicUrl` **only** for a manifest id
+passed to `--declare-public`. When a `manifestId` occurs more than once in the
+source, every generated entry for it also gets a `match.transportFingerprint`.
+
+### `transportFingerprint`
+
+This is the keyed display fingerprint of a descriptor's transport URL: the
+12-hex-character value after `#` in the endpoint label shown by
+`backup inspect --json`. It is stable on one machine but machine-specific,
+because it depends on the local redaction key. A profile that pins a
+`transportFingerprint` is therefore tied to the machine that generated it. It is
+still the right identifier to use, because a plain hash of a transport URL would
+be a reversible fingerprint of a secret.
+
+## Change plan v1 (`profile diff --out-plan`)
+
+A change plan is a deterministic, reviewable description of how to make a current
+collection match a profile. Contract:
+[`schemas/change-plan-v1.schema.json`](../schemas/change-plan-v1.schema.json).
+`profile diff` validates its own output against that schema before printing or
+writing it, and re-checks that `planHash` matches the plan body.
+
+Fields:
+
+- `schemaVersion` — `1`.
+- `createdAt` — UTC, `YYYY-MM-DDTHH:MM:SSZ`, second precision.
+- `baseCollectionFingerprint` — the **raw SHA-256** of the canonical current
+  collection JSON (64 hex). It is a one-way base-state guard for the later apply
+  path, not a redaction substitute; it is never a transport URL.
+- `desiredProfileFingerprint` — raw SHA-256 of the canonical desired profile
+  JSON (64 hex).
+- `operations` — ordered list (see below).
+- `warnings` — deduplicated, sorted strings.
+- `planHash` — SHA-256 of the canonical plan JSON with **both `planHash` and
+  `createdAt` removed**. Two diffs of unchanged inputs therefore produce
+  byte-identical plans apart from `createdAt`, and an identical `planHash`.
+  `createdAt` is excluded because the hash identifies the *operations a human
+  reviewed*, not the moment the file was written.
+
+Operation types and their fields:
+
+| `op`             | Meaning                                             | Fields                                                    |
+| ---------------- | -------------------------------------------------- | ------------------------------------------------------- |
+| `remove`         | Descriptor deleted from the collection.            | `manifestId`, `fromIndex`, `key?`, `reason`             |
+| `add`            | New descriptor introduced by the profile.          | `key`, `manifestId`, `finalIndex`, `endpoint?`/`endpointRef?` |
+| `move`           | Surviving descriptor changes index.                | `manifestId`, `fromIndex`, `finalIndex`, `key?`, `reason` (`managed` or `unmanaged-shift`) |
+| `replaceEndpoint`| Managed endpoint differs, or cannot be confirmed.  | `key`, `manifestId`, `finalIndex`, `endpoint?`/`endpointRef?`, `reason?` (`offline-unverifiable`) |
+| `preserve`       | Existing descriptor retained, at `finalIndex`.     | `manifestId`, `finalIndex`, `key?`, `endpoint?`          |
+
+`fromIndex` is the descriptor's index in the input collection; `finalIndex` is
+its index in the target. `endpoint` is a redacted endpoint label; `endpointRef`
+is a secret reference copied verbatim (for example `env:STREMIOCTL_X_URL`). A
+plan never contains a resolved URL or secret value.
+
+Every surviving existing descriptor gets exactly one `preserve` entry, so
+`preserve` plus `add` is a complete, contiguous `0..n-1` map of the target
+collection that the apply path (Phase 5) can build from directly. `move` and
+`replaceEndpoint` are delta annotations layered on top of the descriptor's
+`preserve` entry, not replacements for it.
+
+Operations are ordered `remove`, `add`, `move`, `replaceEndpoint`, `preserve`,
+and within a group by `manifestId` then `key`. This order is for human review;
+the apply path builds the whole target locally in one step.
+
+A **converged** profile produces `operations: []` and exit `0`. Any planned
+change produces exit `10`; `preserve` entries appear only once there is at least
+one mutating operation for them to complete into a target manifest. Matching follows
+`SPEC.md` section 10: an explicit saved key map (not populated until a later
+phase), then `manifestId` + `transportFingerprint`, then a unique `manifestId`,
+otherwise an ambiguity error (exit `2`) telling you to add a
+`match.transportFingerprint`.

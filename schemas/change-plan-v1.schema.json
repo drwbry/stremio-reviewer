@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stremioctl.invalid/schemas/change-plan-v1.schema.json",
+  "title": "stremioctl change plan v1",
+  "description": "A deterministic, human-reviewable description of the changes needed to make a current add-on collection match a desired profile. It carries secret references and keyed fingerprints, never resolved secret values or complete transport URLs. `planHash` is the SHA-256 of the canonical plan JSON with both `planHash` and `createdAt` removed, so it is stable across re-runs of an unchanged diff.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "createdAt",
+    "baseCollectionFingerprint",
+    "desiredProfileFingerprint",
+    "operations",
+    "warnings",
+    "planHash"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "createdAt": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "baseCollectionFingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "desiredProfileFingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "planHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["op", "manifestId"],
+        "properties": {
+          "op": {"enum": ["add", "remove", "move", "replaceEndpoint", "preserve"]},
+          "key": {"type": "string"},
+          "manifestId": {"type": "string"},
+          "fromIndex": {"type": "integer", "minimum": 0},
+          "finalIndex": {"type": "integer", "minimum": 0},
+          "reason": {"type": "string"},
+          "endpoint": {"type": "string"},
+          "endpointRef": {"type": "string"}
+        }
+      }
+    }
+  }
+}

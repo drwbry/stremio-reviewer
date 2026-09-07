@@ -1,0 +1,32 @@
+[
+  {
+    "manifest": {
+      "id": "synthetic.dup",
+      "name": "Synthetic Dup A",
+      "version": "1.0.0",
+      "resources": [],
+      "types": []
+    },
+    "transportUrl": "https://dup-a.example.invalid/manifest.json"
+  },
+  {
+    "manifest": {
+      "id": "synthetic.dup",
+      "name": "Synthetic Dup B",
+      "version": "1.0.0",
+      "resources": [],
+      "types": []
+    },
+    "transportUrl": "https://dup-b.example.invalid/manifest.json"
+  },
+  {
+    "manifest": {
+      "id": "synthetic.solo",
+      "name": "Synthetic Solo",
+      "version": "1.0.0",
+      "resources": [],
+      "types": []
+    },
+    "transportUrl": "https://solo.example.invalid/manifest.json"
+  }
+]

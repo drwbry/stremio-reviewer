@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "changes",
+  "addons": [
+    {
+      "key": "stream",
+      "match": {"manifestId": "synthetic.stream"},
+      "state": "present",
+      "position": 0,
+      "manage": ["state", "position"]
+    },
+    {
+      "key": "subtitles",
+      "match": {"manifestId": "synthetic.subtitles"},
+      "state": "absent",
+      "manage": ["state"]
+    }
+  ],
+  "policy": {
+    "requireHttps": true,
+    "preserveUnmanagedAddons": true
+  }
+}

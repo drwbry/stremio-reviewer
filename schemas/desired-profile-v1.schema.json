@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stremioctl.invalid/schemas/desired-profile-v1.schema.json",
+  "title": "stremioctl desired profile v1",
+  "description": "A secret-free description of the add-on collection a user wants. It is safe to commit: endpoints appear only as public URLs the user has explicitly declared public, or as unresolved secret references (env:NAME / file:/absolute/path). The structural contract is here; stremioctl.profiles adds the semantic rules (unique keys, secret-reference syntax, position/manage coherence).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "name", "addons"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "name": {"type": "string", "minLength": 1},
+    "addons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "match", "state"],
+        "properties": {
+          "key": {"type": "string", "minLength": 1},
+          "match": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["manifestId"],
+            "properties": {
+              "manifestId": {"type": "string", "minLength": 1},
+              "transportFingerprint": {"type": "string", "pattern": "^[0-9a-f]{12}$"}
+            }
+          },
+          "state": {"enum": ["present", "absent"]},
+          "position": {"type": "integer", "minimum": 0},
+          "endpoint": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "publicUrl": {"type": "string", "minLength": 1},
+              "secretRef": {"type": "string", "minLength": 1}
+            },
+            "oneOf": [
+              {"required": ["publicUrl"]},
+              {"required": ["secretRef"]}
+            ]
+          },
+          "manage": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"enum": ["state", "position", "endpoint"]}
+          }
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requireHttps": {"type": "boolean"},
+        "manifestTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 30},
+        "maxConcurrentProbes": {"type": "integer", "minimum": 1, "maximum": 10},
+        "allowPrivateNetwork": {"type": "boolean"},
+        "preserveUnmanagedAddons": {"type": "boolean"}
+      }
+    }
+  }
+}
