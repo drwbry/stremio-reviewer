@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stremioctl.invalid/schemas/audit-report-v1.schema.json",
+  "title": "stremioctl audit report v1",
+  "description": "Output of `probe collection`. Contains identifiers, statuses, timings, warnings, and redacted endpoint labels only - never a complete transport URL, a response body, a header value, or an auth key.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "report",
+    "generatedAt",
+    "descriptorCount",
+    "statusCounts",
+    "entries"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "report": {"const": "audit"},
+    "generatedAt": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "descriptorCount": {"type": "integer", "minimum": 0},
+    "statusCounts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["index", "status", "secure", "attempts", "redirects", "warnings"],
+        "properties": {
+          "index": {"type": "integer", "minimum": 0},
+          "manifestId": {"type": ["string", "null"]},
+          "endpoint": {"type": ["string", "null"]},
+          "secure": {"type": "boolean"},
+          "status": {
+            "enum": [
+              "healthy",
+              "warning",
+              "unreachable",
+              "invalid_manifest",
+              "identity_mismatch",
+              "insecure_transport",
+              "blocked_destination"
+            ]
+          },
+          "httpStatus": {"type": ["integer", "null"]},
+          "latencyMs": {"type": ["integer", "null"], "minimum": 0},
+          "attempts": {"type": "integer", "minimum": 0},
+          "redirects": {"type": "integer", "minimum": 0},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "detail": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}

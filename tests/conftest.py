@@ -26,6 +26,7 @@ def _private_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _block_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
+    real_getaddrinfo = socket.getaddrinfo
 
     def _host_of(address: object) -> object:
         return address[0] if isinstance(address, tuple) and address else address
@@ -40,6 +41,14 @@ def _block_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             return real_connect_ex(self, address)
         raise RuntimeError(f"blocked network connect_ex to {_host_of(address)!r} during tests")
 
+    def guard_getaddrinfo(host: object, *args: object, **kwargs: object) -> object:
+        # DNS is network access too. Phase 3's prober resolves before connecting,
+        # so an un-mocked probe test must fail loudly, not quietly hit a resolver.
+        if host in _ALLOWED_HOSTS:
+            return real_getaddrinfo(host, *args, **kwargs)  # type: ignore[arg-type]
+        raise RuntimeError(f"blocked DNS resolution of {host!r} during tests")
+
     monkeypatch.setattr(socket.socket, "connect", guard_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", guard_connect_ex)
+    monkeypatch.setattr(socket, "getaddrinfo", guard_getaddrinfo)
     yield

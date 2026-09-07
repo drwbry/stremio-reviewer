@@ -215,3 +215,59 @@ one mutating operation for them to complete into a target manifest. Matching fol
 phase), then `manifestId` + `transportFingerprint`, then a unique `manifestId`,
 otherwise an ambiguity error (exit `2`) telling you to add a
 `match.transportFingerprint`.
+
+## Audit report v1 (`probe collection`)
+
+`probe collection` fetches each descriptor's transport URL and emits an audit
+report matching
+[`schemas/audit-report-v1.schema.json`](../schemas/audit-report-v1.schema.json).
+`--json` validates the report against that schema before printing it. The report
+carries identifiers, statuses, timings, warnings, and redacted endpoint labels
+only — never a complete transport URL, a response body, a header value, or an
+auth key.
+
+Top level: `schemaVersion` (`1`), `report` (`"audit"`), `generatedAt` (UTC,
+second precision), `descriptorCount`, `statusCounts` (a map of status → count),
+and `entries`.
+
+Each entry:
+
+| Field        | Notes                                                               |
+| ------------ | ----------------------------------------------------------------- |
+| `index`      | Position in the collection.                                       |
+| `manifestId` | The descriptor's declared id (or `null`).                         |
+| `endpoint`   | Redacted label `scheme://host/<redacted>#<fingerprint>`, or `null`. |
+| `secure`     | `true` when the transport URL is `https`.                         |
+| `status`     | One of the statuses below.                                        |
+| `httpStatus` | The final HTTP status code, or `null` if no response was received. |
+| `latencyMs`  | Time to the final response in whole milliseconds, backoff excluded, or `null`. |
+| `attempts`   | Total request attempts across retries and any followed redirect.  |
+| `redirects`  | Number of redirects followed (0 or 1).                            |
+| `warnings`   | Short strings: `http instead of https`, non-JSON content type, missing recommended manifest fields. |
+| `detail`     | One sanitized sentence explaining a non-healthy status, or `null`. |
+
+Statuses (SPEC §11):
+
+| Status              | Meaning                                                        |
+| ------------------- | ----------------------------------------------------------- |
+| `healthy`           | `https`, 2xx, valid manifest, id matches, no warnings.       |
+| `warning`           | Reached and usable, but something is off (for example a non-JSON content type). |
+| `insecure_transport`| Would be healthy, but the transport URL is `http`.           |
+| `unreachable`       | DNS failure, connection error, timeout, non-2xx after retries, a cross-origin redirect, or more than one redirect. |
+| `invalid_manifest`  | 2xx, but the body is not JSON, not an object, has no string `id`, or exceeds 2 MiB. |
+| `identity_mismatch` | Valid manifest whose `id` differs from the descriptor.      |
+| `blocked_destination` | The host (or a redirect target) resolves to a loopback, link-local, multicast, unspecified, reserved, or private address and `--allow-private-network` was not given. No request is made. |
+
+`insecure_transport` is also always present in `warnings` and reflected in
+`secure`, so nothing is lost by it being the headline status.
+
+Network behaviour is fixed for `probe collection`: `GET`, 3-second connect
+timeout, 8-second overall timeout, concurrency 4, a 2 MiB response cap, at most
+one same-origin redirect, and two attempts total for transient connection errors
+and HTTP 429/502/503/504 with a small jittered backoff. The 1–30 second and 1–10
+concurrency ranges from SPEC §11 apply to the profile `policy` values that will
+drive later phases, not to this command.
+
+Exit code: `0` when every entry is `healthy` or `warning`; `3` when any entry has
+another status; `2` when the collection cannot be parsed or fails the structural
+contract.

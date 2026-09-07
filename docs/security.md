@@ -47,12 +47,38 @@ of what Phases 1–2 actually enforce.
 - `assert_no_sentinels` guards the serialized plan and the generated profile
   before either is written, exactly as it guards Phase 1 output.
 
+## Probing (`probe collection`)
+
+- `probe collection` is the only command that touches the network. It is
+  read-only: it issues one `GET` per descriptor to the transport URL and never
+  requests `catalog`, `meta`, `stream`, or `subtitles` routes.
+- Before any connection, the host is resolved and **every** returned address is
+  checked. Loopback, link-local, multicast, unspecified, reserved, and private
+  addresses are refused (`blocked_destination`, no request made) unless
+  `--allow-private-network` is given. IPv4-mapped IPv6 addresses are unwrapped
+  and re-checked. `--allow-private-network` deliberately unblocks loopback,
+  link-local, and private ranges together; multicast, unspecified, and reserved
+  stay blocked.
+- Redirects: at most one, and only same-origin. A cross-origin `Location` or a
+  second redirect is `unreachable`. The redirect target is re-resolved and
+  re-checked before it is followed.
+- The response body is streamed and abandoned past 2 MiB. Only `manifest.id` is
+  read from the parsed body; the body itself is never stored or reported.
+- Every `detail` string is run through `sanitize_text`, so an `httpx` exception
+  that embeds the request URL cannot leak it. The audit report and its schema
+  allow a redacted endpoint label (`scheme://host/<redacted>#<fp>`) but no
+  complete URL, response body, or header value.
+- Known limitation: a DNS-rebinding race between the pre-flight resolution and
+  `httpx`'s own resolution is not closed (no IP pinning). Acceptable because the
+  URLs come from the user's own collection file, not untrusted input. Tracked in
+  `BACKLOG.md`.
+
 ## Network
 
-- `backup inspect`, `backup validate`, `backup redact`, `profile init`,
-  `profile validate`, and `profile diff` make no network calls.
+- Every command except `probe collection` makes no network calls.
 - The test suite installs an autouse guard that turns any unexpected socket
-  connection into an immediate failure.
+  connection into an immediate failure. Probe tests use `respx`, injected
+  resolvers, and a loopback fake server, so the real suite runs fully offline.
 
 ## Test isolation
 

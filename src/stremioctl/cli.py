@@ -1,8 +1,9 @@
 """The stremioctl command-line entry point.
 
 Phase 1 exposes offline ``backup`` sub-commands; Phase 2 adds offline ``profile``
-sub-commands. Every command body runs inside a single error boundary that prints
-sanitized messages to stderr and maps typed errors to their stable exit codes.
+sub-commands; Phase 3 adds the networked ``probe`` sub-command. Every command
+body runs inside a single error boundary that prints sanitized messages to
+stderr and maps typed errors to their stable exit codes.
 """
 
 from __future__ import annotations
@@ -28,6 +29,12 @@ from stremioctl.privacy import (
     redact_document,
     sanitize_exception,
 )
+from stremioctl.probing import (
+    ProbeConfig,
+    audit_exit_code,
+    probe_collection,
+    render_audit_human,
+)
 from stremioctl.profiles import build_starter_profile, check_profile, parse_profile
 from stremioctl.reports import (
     build_inspect_report,
@@ -50,6 +57,12 @@ profile_app = typer.Typer(
     help="Offline desired-profile authoring, validation, and deterministic diffs.",
 )
 app.add_typer(profile_app, name="profile")
+probe_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="Bounded, read-only manifest probing and the audit report.",
+)
+app.add_typer(probe_app, name="probe")
 
 
 def _stdout_console() -> Console:
@@ -101,6 +114,17 @@ def _assert_plan_contract(plan: dict[str, object]) -> str:
         raise RuntimeError(f"internal plan contract violation: {'; '.join(errors)}")
     if plan.get("planHash") != compute_plan_hash(plan):  # defensive: hash must match its body
         raise RuntimeError("internal plan contract violation: planHash does not match plan body")
+    return text
+
+
+def _assert_audit_contract(report: dict[str, object]) -> str:
+    """Serialize an audit report, proving it is sentinel-free and schema-valid."""
+
+    text = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
+    assert_no_sentinels(text)
+    errors = iter_schema_errors(report, "audit-report-v1")
+    if errors:
+        raise RuntimeError(f"internal audit contract violation: {'; '.join(errors)}")
     return text
 
 
@@ -348,10 +372,39 @@ def profile_diff(
     _run(action)
 
 
+@probe_app.command("collection")
+def probe_collection_cmd(
+    path: Annotated[Path, typer.Argument(help="Path to a Stremio add-on collection export.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Emit a JSON audit report.")] = False,
+    allow_private_network: Annotated[
+        bool,
+        typer.Option(
+            "--allow-private-network",
+            help="Permit probing loopback, link-local, and private destinations.",
+        ),
+    ] = False,
+) -> None:
+    """Fetch and audit each descriptor's manifest. Exit 3 if any endpoint is unhealthy."""
+
+    def action() -> int:
+        key = load_or_create_redaction_key()
+        payload = load_json_document(path)
+        config = ProbeConfig(allow_private_network=allow_private_network)
+        report = probe_collection(payload, key, config, generated_at=_utc_now_z())
+        if json_output:
+            sys.stdout.write(_assert_audit_contract(report) + "\n")
+        else:
+            assert_no_sentinels(json.dumps(report, ensure_ascii=False))
+            render_audit_human(report, _stdout_console())
+        return audit_exit_code(report)
+
+    _run(action)
+
+
 def main() -> None:
     """Run the CLI."""
 
     app()
 
 
-__all__ = ["app", "backup_app", "main", "profile_app"]
+__all__ = ["app", "backup_app", "main", "probe_app", "profile_app"]

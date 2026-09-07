@@ -61,4 +61,27 @@ Status key: **open** (still needs doing) · **resolved** (done, kept for history
 
 ## Phase 3 — probing and audit
 
-_(none yet)_
+- **open — DNS-rebinding race in the probe guard.** `probe collection` resolves
+  the host and checks every address before connecting, and re-checks a redirect
+  target, but it does not pin the connection to the validated IP. A resolver
+  that returns a safe address to the pre-flight check and an unsafe one to
+  `httpx` a moment later would not be caught. Accepted for now because probe
+  targets come from the user's own collection file, not untrusted input. Close
+  it with a pinned-IP transport (or `httpx` `transport=` resolver hook) if probe
+  input ever becomes untrusted.
+
+- **open — `probe collection` uses fixed network parameters.** The command
+  always runs with the SPEC §11 defaults (8 s timeout, concurrency 4, 2
+  attempts). `ProbeConfig` already validates the 1–30 s and 1–10 ranges, but
+  nothing feeds non-default values in yet. Wire the profile `policy`
+  (`manifestTimeoutSeconds`, `maxConcurrentProbes`, `allowPrivateNetwork`) into
+  the prober when a later phase runs a probe as part of planning or applying.
+
+- **open — `healthy` / `warning` are only covered over a mocked transport.**
+  The loopback fake-server integration test exercises `insecure_transport`,
+  `identity_mismatch`, `invalid_manifest`, `unreachable`, `blocked_destination`,
+  and redirect-following over real sockets. `healthy` and `warning` need TLS,
+  which the fake server does not serve, so they are covered via `respx` (an
+  httpx transport-level integration test) instead. Add a self-signed TLS fake
+  server if a fully real-socket pass over those two statuses is wanted — it
+  would require a probe-side `verify=` toggle, which is itself a footgun.

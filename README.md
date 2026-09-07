@@ -26,9 +26,10 @@ python -m stremioctl --version
 `python -m pytest` also enforces line coverage (80% overall) via the
 configuration in `pyproject.toml`.
 
-## Commands (Phases 1–2)
+## Commands (Phases 1–3)
 
-All of these are offline. None of them makes a network call.
+The `backup` and `profile` commands are entirely offline. Only `probe` makes
+network calls.
 
 ```text
 stremioctl backup inspect PATH [--json]
@@ -37,6 +38,7 @@ stremioctl backup redact PATH --out PATH [--hide-hosts]
 stremioctl profile init --from PATH --out PATH [--declare-public MANIFEST_ID ...]
 stremioctl profile validate PATH
 stremioctl profile diff --current PATH --desired PATH [--out-plan PATH]
+stremioctl probe collection PATH [--json] [--allow-private-network]
 ```
 
 - `backup inspect` — summarize a collection export: descriptor count, transport
@@ -59,10 +61,18 @@ stremioctl profile diff --current PATH --desired PATH [--out-plan PATH]
   deterministic change plan. Exit `0` when the collection already matches, `10`
   when changes are planned, `2` on invalid input or an ambiguous selector.
   `--out-plan` writes the plan JSON atomically with mode `0600`.
+- `probe collection` — fetch each descriptor's transport URL with a bounded,
+  redirect-restricted `GET`, parse the manifest, and compare its identity. It
+  never requests catalog/meta/stream/subtitles routes and refuses loopback,
+  link-local, multicast, and private destinations unless
+  `--allow-private-network` is given. Exit `0` when every endpoint is `healthy`
+  or a plain `warning`, `3` when any endpoint is unreachable, blocked, insecure,
+  invalid, or mismatched, `2` on invalid input. The audit report shows redacted
+  endpoint labels only — never a complete URL, a response body, or a header.
 
 Exit codes follow `SPEC.md` section 9: `0` success, `2` invalid input or
-configuration, `10` a `diff` that found planned changes. Errors are printed to
-stderr in redacted form.
+configuration, `3` a `probe` that found an unhealthy endpoint, `10` a `diff`
+that found planned changes. Errors are printed to stderr in redacted form.
 
 See [`docs/data-formats.md`](docs/data-formats.md) for the report, profile, plan,
 and schema details and [`docs/security.md`](docs/security.md) for the privacy
@@ -82,5 +92,7 @@ have explicitly declared public and unresolved secret references
 (`env:NAME` / `file:/absolute/path`). `profile init` writes it with mode `0600`
 as a precaution; loosen it yourself if you intend to check it in.
 
-Probing and account operations are deliberately deferred to their specified
+`probe collection` is the only command that touches the network. It is
+read-only: it fetches manifests, never content routes, and never sends
+credentials. Account operations are deliberately deferred to their specified
 phases.
