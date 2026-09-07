@@ -47,8 +47,10 @@ Status key: **open** (still needs doing) · **resolved** (done, kept for history
 - **open — SPEC §10 matching step 1 is unimplemented.** The documented match
   order starts with "explicit local `key` mapping saved in private state". No
   private key-map store exists yet, so matching begins at step 2 (`manifestId`
-  + keyed transport fingerprint). Add the private store when a phase first
-  needs to persist a resolved identity (likely Phase 4 `account pull`).
+  + keyed transport fingerprint). This lands in **Phase 5**, not Phase 4: a
+  read-only phase has nothing to populate the map with — the identity that
+  belongs in it is confirmed at apply time. Adding it to `account plan` would
+  give a read-only command a side effect on private state.
 
 - **open — `backup redact --out` overwrite gap.** `profile init` and
   `profile diff` refuse to overwrite an input path or an unrelated existing
@@ -85,3 +87,30 @@ Status key: **open** (still needs doing) · **resolved** (done, kept for history
   httpx transport-level integration test) instead. Add a self-signed TLS fake
   server if a fully real-socket pass over those two statuses is wanted — it
   would require a probe-side `verify=` toggle, which is itself a footgun.
+
+---
+
+## Phase 4 — authenticated pull and read-only planning
+
+- **open — any body-level API error maps to exit 4.** `fetch_addon_collection`
+  treats any `{"error": {...}}` response to `addonCollectionGet` as an
+  authentication failure, because on a read the auth key is the only
+  client-controlled input. The server's `error.code` table is not publicly
+  documented, so it is not branched on (the code is surfaced in the message).
+  Build a real code → error-class mapping when the table is known, so a rate
+  limit or a server fault is not reported as "bad key".
+
+- **open — `account` timeout / base URL not driven by profile policy.**
+  `account pull` / `account plan` always use the built-in 15 s timeout. When a
+  later phase runs account access as part of a workflow, feed the profile
+  `policy` through, mirroring the same gap noted for the prober.
+
+- **resolved (partial) — strict secret-file reader.** `io.read_secret_file`
+  implements the SPEC §7.2 / §8.3 permission rule (regular file, owned, no
+  group/other access) and is used by `--auth-key-file`. Phase 5 should reuse it
+  to resolve profile `file:` references instead of reimplementing the check.
+
+- **open — `login` / `loginWithToken` / `authWithApple` are not supported.**
+  By SPEC §3 the user supplies an already-issued auth key. If a future version
+  wants a `link`-code flow (device pairing, no password), it is a separate
+  design; do not add email/password login.

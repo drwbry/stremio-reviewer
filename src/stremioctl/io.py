@@ -72,6 +72,64 @@ def ensure_private_app_dir(path: Path | None = None) -> Path:
     return ensure_private_directory(path or private_app_path())
 
 
+def assert_private_output_dir(target: Path) -> None:
+    """Require that *target*'s parent directory is private, without changing it.
+
+    If the parent does not exist it is created with mode ``0700``. If it exists,
+    it must be a real directory owned by the current user with no group/other
+    access; it is **not** re-``chmod``-ed, so pointing an output at a shared
+    directory like ``$HOME`` is refused rather than silently tightened.
+    """
+
+    parent = Path(target).parent
+    if not parent.exists():
+        ensure_private_directory(parent)
+        return
+    if parent.is_symlink():
+        raise SecurityError(f"Refusing symlinked output directory: {parent}")
+    info = parent.stat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise SecurityError("Output path's parent is not a directory")
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise SecurityError("Output directory is not owned by the current user")
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise SecurityError(
+            f"{parent} is accessible by group or other; write private artifacts under a "
+            f"restricted directory such as $STREMIOCTL_DATA_DIR"
+        )
+
+
+def read_secret_file(path: Path) -> str:
+    """Read a secret from a strict-permission file (SPEC sections 7.2 and 8.3).
+
+    The file must be a regular file, not a symlink, owned by the current user,
+    and not readable or writable by group or other on POSIX. The value is
+    returned exactly as stored (caller strips as needed) and never logged here.
+    """
+
+    path = Path(path)
+    if path.is_symlink():
+        raise SecurityError(f"Refusing symlink for secret file: {path.name}")
+    try:
+        info = path.stat()
+    except OSError as exc:
+        raise SecurityError(f"Cannot access secret file: {path.name}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise SecurityError("Secret file must be a regular file")
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise SecurityError("Secret file is not owned by the current user")
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise SecurityError("Secret file must not be accessible by group or other")
+    if info.st_size > _MAX_INPUT_BYTES:
+        raise SecurityError("Secret file is larger than the safe processing limit")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise SecurityError("Secret file is not valid UTF-8 text") from exc
+    except OSError as exc:
+        raise SecurityError(f"Cannot read secret file: {path.name}") from exc
+
+
 def load_json_document(path: Path) -> Any:
     """Read and parse a JSON file with bounded size and sanitized errors.
 
@@ -151,10 +209,12 @@ def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
 
 
 __all__ = [
+    "assert_private_output_dir",
     "atomic_write_bytes",
     "atomic_write_text",
     "ensure_private_app_dir",
     "ensure_private_directory",
     "load_json_document",
     "private_app_path",
+    "read_secret_file",
 ]

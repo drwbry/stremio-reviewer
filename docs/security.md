@@ -1,7 +1,7 @@
 # Security notes
 
 The full requirements are in [`SPEC.md`](../SPEC.md) section 8. This is a summary
-of what Phases 1–2 actually enforce.
+of what Phases 1–4 actually enforce.
 
 ## Sensitive data
 
@@ -73,12 +73,39 @@ of what Phases 1–2 actually enforce.
   URLs come from the user's own collection file, not untrusted input. Tracked in
   `BACKLOG.md`.
 
+## Account access (`account pull` / `account plan`)
+
+- The auth key is read only inside `account` commands, only from
+  `STREMIO_AUTH_KEY` or `--auth-key-file`. There is no option that takes the key
+  as a command-line value (SPEC §8.2). A key file must be a regular file, owned
+  by the current user, mode with no group/other bits — the same rule as a
+  profile `file:` secret reference.
+- The key travels **only** in the JSON request body (`authKey`), verified against
+  upstream source. Never a URL, never a header, never logged.
+- Every failure path in `stremioctl.account` raises a typed error whose message
+  is built from literals plus at most an HTTP status or the sanitized server
+  `error.message`, and is then run through `sanitize_text(..., secrets_to_hide=(key,))`
+  a second time at the CLI boundary. A test forces every failure mode with the
+  key set to a sentinel and asserts it never appears in stdout, stderr, the
+  snapshot, or the raised exception.
+- A custom `--base-url` must be `https`. Plain `http` is accepted only for a
+  loopback host and only with `STREMIOCTL_INSECURE_LOOPBACK=1` (test use).
+- The **snapshot** written by `account pull` is the one raw artifact: it holds
+  the collection verbatim. It is written atomically at mode `0600` under a parent
+  directory that is verified private (created `0700`, or refused if it already
+  exists group/world-accessible — the directory is never re-`chmod`-ed). It is
+  not redacted and not sentinel-checked. The **plan** written by `account plan`
+  is a normal redacted change plan (mode `0600`, overwrite-guarded).
+- `account` performs no writes to the account in v1.
+
 ## Network
 
-- Every command except `probe collection` makes no network calls.
+- Every command except `probe collection` and `account` makes no network calls.
 - The test suite installs an autouse guard that turns any unexpected socket
-  connection into an immediate failure. Probe tests use `respx`, injected
-  resolvers, and a loopback fake server, so the real suite runs fully offline.
+  connection or DNS lookup into an immediate failure. Probe and account tests use
+  `respx`, injected resolvers, and a loopback fake server, so the real suite runs
+  fully offline. Tests under `tests/live/` opt out of the guard and are skipped
+  unless `STREMIOCTL_LIVE_TESTS=1` plus the required credential and a TTY.
 
 ## Test isolation
 

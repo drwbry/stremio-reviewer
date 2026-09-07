@@ -26,10 +26,10 @@ python -m stremioctl --version
 `python -m pytest` also enforces line coverage (80% overall) via the
 configuration in `pyproject.toml`.
 
-## Commands (Phases 1–3)
+## Commands (Phases 1–4)
 
-The `backup` and `profile` commands are entirely offline. Only `probe` makes
-network calls.
+The `backup` and `profile` commands are entirely offline. `probe` and `account`
+make network calls; `account` is the only command that authenticates.
 
 ```text
 stremioctl backup inspect PATH [--json]
@@ -39,6 +39,8 @@ stremioctl profile init --from PATH --out PATH [--declare-public MANIFEST_ID ...
 stremioctl profile validate PATH
 stremioctl profile diff --current PATH --desired PATH [--out-plan PATH]
 stremioctl probe collection PATH [--json] [--allow-private-network]
+stremioctl account pull --out PATH [--auth-key-file PATH] [--base-url URL]
+stremioctl account plan --desired PATH --out PATH [--auth-key-file PATH] [--base-url URL]
 ```
 
 - `backup inspect` — summarize a collection export: descriptor count, transport
@@ -69,10 +71,25 @@ stremioctl probe collection PATH [--json] [--allow-private-network]
   or a plain `warning`, `3` when any endpoint is unreachable, blocked, insecure,
   invalid, or mismatched, `2` on invalid input. The audit report shows redacted
   endpoint labels only — never a complete URL, a response body, or a header.
+- `account pull` — read the account's add-on collection over the authenticated
+  Stremio API (`addonCollectionGet`) and write a **private** snapshot with mode
+  `0600`. The snapshot is raw (it holds real transport URLs), so its parent
+  directory must not be group- or world-accessible; point `--out` under
+  `$STREMIOCTL_DATA_DIR` or another restricted directory.
+- `account plan` — pull a fresh collection and diff it against a desired profile,
+  producing a redacted change plan exactly like `profile diff` (exit `0`
+  converged, `10` with planned changes).
+
+The auth key is read only from `STREMIO_AUTH_KEY` or `--auth-key-file PATH` (a
+regular file, owned by you, mode `0600`). There is no option that takes the key
+as a value. It is never written to the snapshot, a URL, a header, a log line, or
+an error message. See `docs/stremio-api-contract.md` for the verified wire
+contract and how to obtain a key without giving the CLI a password.
 
 Exit codes follow `SPEC.md` section 9: `0` success, `2` invalid input or
-configuration, `3` a `probe` that found an unhealthy endpoint, `10` a `diff`
-that found planned changes. Errors are printed to stderr in redacted form.
+configuration, `3` a network/remote failure or a `probe` that found an unhealthy
+endpoint, `4` a missing or rejected auth key, `10` a `diff`/`plan` that found
+planned changes. Errors are printed to stderr in redacted form.
 
 See [`docs/data-formats.md`](docs/data-formats.md) for the report, profile, plan,
 and schema details and [`docs/security.md`](docs/security.md) for the privacy
@@ -92,7 +109,7 @@ have explicitly declared public and unresolved secret references
 (`env:NAME` / `file:/absolute/path`). `profile init` writes it with mode `0600`
 as a precaution; loosen it yourself if you intend to check it in.
 
-`probe collection` is the only command that touches the network. It is
-read-only: it fetches manifests, never content routes, and never sends
-credentials. Account operations are deliberately deferred to their specified
-phases.
+`probe collection` fetches manifests only, never content routes, and sends no
+credentials. `account pull` / `account plan` are authenticated but **read-only** —
+there is no write path in v1. Applying a plan, verification, and rollback are
+deferred to Phase 5.

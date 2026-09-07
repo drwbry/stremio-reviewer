@@ -23,7 +23,15 @@ def _private_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _block_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _block_network(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    # Tests under tests/live/ are the opt-in real-network suite (SPEC section 14);
+    # they gate themselves on STREMIOCTL_LIVE_TESTS and are skipped by default.
+    if "/live/" in request.node.path.as_posix():
+        yield
+        return
+
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
     real_getaddrinfo = socket.getaddrinfo

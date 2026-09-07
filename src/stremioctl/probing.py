@@ -226,7 +226,7 @@ def _same_origin(a: str, b: str) -> bool:
     )
 
 
-def _read_capped(response: httpx.Response, cap: int) -> bytes | None:
+def read_capped_body(response: httpx.Response, cap: int) -> bytes | None:
     """Return the body, or ``None`` once it streams past *cap* bytes."""
 
     total = 0
@@ -351,7 +351,7 @@ def _run_probe(
                 entry.status = STATUS_UNREACHABLE
                 entry.detail = f"server responded with status {response.status_code}"
                 return
-            body = _read_capped(response, cfg.max_bytes)
+            body = read_capped_body(response, cfg.max_bytes)
             content_type = response.headers.get("content-type", "")
         finally:
             response.close()
@@ -523,5 +523,6 @@ __all__ = [
     "Resolver",
     "audit_exit_code",
     "probe_collection",
+    "read_capped_body",
     "render_audit_human",
 ]

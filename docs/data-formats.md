@@ -271,3 +271,36 @@ drive later phases, not to this command.
 Exit code: `0` when every entry is `healthy` or `warning`; `3` when any entry has
 another status; `2` when the collection cannot be parsed or fails the structural
 contract.
+
+## Account snapshot v1 (`account pull --out`)
+
+`account pull` performs an authenticated `addonCollectionGet` (see
+[`stremio-api-contract.md`](stremio-api-contract.md)) and writes an
+**account-snapshot** matching
+[`schemas/account-snapshot-v1.schema.json`](../schemas/account-snapshot-v1.schema.json).
+
+Unlike every other artifact, a snapshot is **raw**: `collection` is the API's
+`result.addons` array verbatim, including transport URLs that may carry
+credentials in their path. It is therefore only ever written under a private
+directory (parent not group/world-accessible) with mode `0600`, and it is never
+redacted or checked for sentinels. `account pull` refuses to write it to a
+shared location such as `$HOME`.
+
+Fields:
+
+- `schemaVersion` — `1`.
+- `artifact` — `"account-snapshot"`.
+- `pulledAt` — UTC, `YYYY-MM-DDTHH:MM:SSZ`.
+- `baseUrl` — the API base URL the pull used (the API host, not a transport URL).
+- `lastModified` — the API's `result.lastModified`, or `null`.
+- `collectionFingerprint` — raw SHA-256 of the canonical `collection` array. It
+  is computed with the same function as a change plan's
+  `baseCollectionFingerprint`, so a plan built from the same pull carries an
+  identical value. Phase 5 uses this for drift detection and rollback
+  confirmation.
+- `collection` — the ordered descriptor array, verbatim.
+
+`account plan --out` writes a normal **change plan v1** (see above), not a
+snapshot: it is redacted, mode `0600`, and guarded against overwriting an
+unrelated file. `account plan` does not write a snapshot — the plan's
+`baseCollectionFingerprint`, taken from the fresh pull, is the drift guard.

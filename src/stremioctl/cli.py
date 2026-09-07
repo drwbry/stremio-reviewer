@@ -19,15 +19,23 @@ import typer
 from rich.console import Console
 
 from stremioctl import __version__
+from stremioctl.account import (
+    DEFAULT_BASE_URL,
+    AccountConfig,
+    build_snapshot,
+    fetch_addon_collection,
+    resolve_auth_key,
+)
 from stremioctl.diff import build_change_plan, render_plan_human
 from stremioctl.errors import StremioctlError, ValidationError
-from stremioctl.io import atomic_write_text, load_json_document
+from stremioctl.io import assert_private_output_dir, atomic_write_text, load_json_document
 from stremioctl.plans import compute_plan_hash
 from stremioctl.privacy import (
     assert_no_sentinels,
     load_or_create_redaction_key,
     redact_document,
     sanitize_exception,
+    sanitize_text,
 )
 from stremioctl.probing import (
     ProbeConfig,
@@ -63,6 +71,12 @@ probe_app = typer.Typer(
     help="Bounded, read-only manifest probing and the audit report.",
 )
 app.add_typer(probe_app, name="probe")
+account_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="Authenticated, read-only account pull and planning. No writes in v1.",
+)
+app.add_typer(account_app, name="account")
 
 
 def _stdout_console() -> Console:
@@ -128,19 +142,40 @@ def _assert_audit_contract(report: dict[str, object]) -> str:
     return text
 
 
+def _assert_snapshot_contract(snapshot: dict[str, object]) -> str:
+    """Serialize an account snapshot and prove it matches its schema.
+
+    The snapshot is a raw private artifact, so it is *not* redacted and *not*
+    checked for sentinels - a real collection may legitimately carry any string.
+    """
+
+    text = json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True)
+    errors = iter_schema_errors(snapshot, "account-snapshot-v1")
+    if errors:
+        raise RuntimeError(f"internal snapshot contract violation: {'; '.join(errors)}")
+    return text
+
+
 def _utc_now_z() -> str:
     """Return the current UTC time as ``YYYY-MM-DDTHH:MM:SSZ`` (second precision)."""
 
     return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_ARTIFACT_MARKERS = {
+    "plan": lambda d: "planHash" in d,
+    "profile": lambda d: "addons" in d,
+    "snapshot": lambda d: d.get("artifact") == "account-snapshot",
+}
+
+
 def _guard_output_path(path: Path, reserved: tuple[Path, ...], *, expect: str) -> None:
     """Refuse to write over an input, or over an unrelated existing file.
 
     An existing target is only overwritten when it already parses as a stremioctl
-    artifact of the expected kind (``"profile"`` or ``"plan"``), so re-running a
-    command to refresh its own output is fine but clobbering a hand-written file
-    is not.
+    artifact of the expected kind (``"plan"``, ``"profile"``, or ``"snapshot"``),
+    so re-running a command to refresh its own output is fine but clobbering a
+    hand-written file is not.
     """
 
     for other in reserved:
@@ -149,8 +184,10 @@ def _guard_output_path(path: Path, reserved: tuple[Path, ...], *, expect: str) -
     if not path.exists():
         return
     existing = load_json_document(path)  # bounded read; non-JSON -> ValidationError
-    recognized = isinstance(existing, dict) and existing.get("schemaVersion") == 1 and (
-        "planHash" in existing if expect == "plan" else "addons" in existing
+    recognized = (
+        isinstance(existing, dict)
+        and existing.get("schemaVersion") == 1
+        and _ARTIFACT_MARKERS[expect](existing)
     )
     if not recognized:
         raise ValidationError(
@@ -401,10 +438,89 @@ def probe_collection_cmd(
     _run(action)
 
 
+_AUTH_KEY_FILE_HELP = (
+    "Read the auth key from this strict-permission file instead of STREMIO_AUTH_KEY."
+)
+_BASE_URL_HELP = "API base URL. Must be https (plain http only for a loopback test server)."
+
+
+@account_app.command("pull")
+def account_pull(
+    out: Annotated[Path, typer.Option("--out", help="Where to write the private snapshot.")],
+    auth_key_file: Annotated[
+        Path | None, typer.Option("--auth-key-file", help=_AUTH_KEY_FILE_HELP)
+    ] = None,
+    base_url: Annotated[
+        str, typer.Option("--base-url", help=_BASE_URL_HELP)
+    ] = DEFAULT_BASE_URL,
+) -> None:
+    """Pull the account's add-on collection into a private, mode-0600 snapshot."""
+
+    def action() -> int:
+        # Fail on an unusable output path before touching the key file or the network.
+        cfg = AccountConfig(base_url=base_url)
+        assert_private_output_dir(out)
+        _guard_output_path(out, (), expect="snapshot")
+        auth_key = resolve_auth_key(auth_key_file=auth_key_file)
+        try:
+            pulled = fetch_addon_collection(auth_key, cfg)
+            snapshot = build_snapshot(pulled, pulled_at=_utc_now_z())
+            text = _assert_snapshot_contract(snapshot) + "\n"
+            atomic_write_text(out, text, mode=0o600)
+        except StremioctlError as exc:  # re-scrub in case a message ever carries the key
+            raise type(exc)(sanitize_text(exc.message, secrets_to_hide=(auth_key,))) from None
+        _stdout_console().print(
+            f"Wrote account snapshot to {out} ({len(pulled.addons)} add-ons, "
+            f"fingerprint {pulled.fingerprint[:12]})."
+        )
+        return 0
+
+    _run(action)
+
+
+@account_app.command("plan")
+def account_plan(
+    desired: Annotated[Path, typer.Option("--desired", help="Desired profile.")],
+    out: Annotated[Path, typer.Option("--out", help="Where to write the change plan.")],
+    auth_key_file: Annotated[
+        Path | None, typer.Option("--auth-key-file", help=_AUTH_KEY_FILE_HELP)
+    ] = None,
+    base_url: Annotated[
+        str, typer.Option("--base-url", help=_BASE_URL_HELP)
+    ] = DEFAULT_BASE_URL,
+) -> None:
+    """Pull the account collection and diff it against a profile. Exit 0/10 like `profile diff`."""
+
+    def action() -> int:
+        key = load_or_create_redaction_key()
+        cfg = AccountConfig(base_url=base_url)
+        desired_doc = load_json_document(desired)
+        profile, profile_warnings = parse_profile(desired_doc)
+        _guard_output_path(out, (desired,), expect="plan")
+        auth_key = resolve_auth_key(auth_key_file=auth_key_file)
+        try:
+            pulled = fetch_addon_collection(auth_key, cfg)
+            plan = build_change_plan(
+                current=pulled.addons,
+                profile=profile,
+                key=key,
+                created_at=_utc_now_z(),
+                profile_warnings=[f.message for f in profile_warnings],
+            )
+            text = _assert_plan_contract(plan) + "\n"
+            atomic_write_text(out, text, mode=0o600)
+        except StremioctlError as exc:  # re-scrub in case a message ever carries the key
+            raise type(exc)(sanitize_text(exc.message, secrets_to_hide=(auth_key,))) from None
+        render_plan_human(plan, _stdout_console())
+        return 10 if plan["operations"] else 0
+
+    _run(action)
+
+
 def main() -> None:
     """Run the CLI."""
 
     app()
 
 
-__all__ = ["app", "backup_app", "main", "probe_app", "profile_app"]
+__all__ = ["account_app", "app", "backup_app", "main", "probe_app", "profile_app"]
