@@ -8,13 +8,14 @@ import httpx
 import pytest
 import respx
 
-from stremioctl.account import AccountConfig, fetch_addon_collection
+from stremioctl.account import AccountConfig, fetch_addon_collection, push_addon_collection
 from stremioctl.diff import build_change_plan
 from stremioctl.errors import AuthenticationError, NetworkError
 from stremioctl.fingerprints import collection_fingerprint
 from stremioctl.profiles import parse_profile
 
 URL = "https://api.strem.io/api/addonCollectionGet"
+SET_URL = "https://api.strem.io/api/addonCollectionSet"
 SENTINEL_KEY = "SENTINEL_MUST_NOT_LEAK"
 
 ADDONS = [
@@ -161,3 +162,54 @@ def test_custom_base_url_is_honoured() -> None:
     route = respx.post(custom).mock(return_value=httpx.Response(200, json=_ok_body()))
     fetch_addon_collection(SENTINEL_KEY, AccountConfig(base_url="https://api.example.test"))
     assert route.called
+
+
+# --- addonCollectionSet (Phase 5) -----------------------------------------
+
+
+@respx.mock
+def test_push_sends_the_exact_documented_request() -> None:
+    route = respx.post(SET_URL).mock(
+        return_value=httpx.Response(200, json={"result": {"success": True}})
+    )
+    push_addon_collection(SENTINEL_KEY, ADDONS, AccountConfig())
+
+    request = route.calls[0].request
+    assert request.method == "POST"
+    assert str(request.url) == SET_URL
+    assert "authorization" not in {k.lower() for k in request.headers}
+    body = json.loads(request.content)
+    assert body == {"type": "AddonCollectionSet", "authKey": SENTINEL_KEY, "addons": ADDONS}
+
+
+@respx.mock
+def test_push_without_success_true_is_a_network_failure() -> None:
+    respx.post(SET_URL).mock(return_value=httpx.Response(200, json={"result": {"success": False}}))
+    with pytest.raises(NetworkError, match="did not confirm"):
+        push_addon_collection(SENTINEL_KEY, ADDONS, AccountConfig())
+
+
+@respx.mock
+def test_push_error_body_is_authentication_failure() -> None:
+    respx.post(SET_URL).mock(
+        return_value=httpx.Response(200, json={"error": {"message": "no session", "code": 1}})
+    )
+    with pytest.raises(AuthenticationError):
+        push_addon_collection(SENTINEL_KEY, ADDONS, AccountConfig())
+
+
+@respx.mock
+def test_push_http_403_is_authentication_failure() -> None:
+    respx.post(SET_URL).mock(return_value=httpx.Response(403))
+    with pytest.raises(AuthenticationError):
+        push_addon_collection(SENTINEL_KEY, ADDONS, AccountConfig())
+
+
+@respx.mock
+def test_push_connection_error_is_sanitized_network_failure() -> None:
+    respx.post(SET_URL).mock(
+        side_effect=httpx.ConnectError(f"boom with key {SENTINEL_KEY}")
+    )
+    with pytest.raises(NetworkError) as excinfo:
+        push_addon_collection(SENTINEL_KEY, ADDONS, AccountConfig())
+    assert SENTINEL_KEY not in str(excinfo.value)

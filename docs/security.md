@@ -96,7 +96,49 @@ of what Phases 1–4 actually enforce.
   exists group/world-accessible — the directory is never re-`chmod`-ed). It is
   not redacted and not sentinel-checked. The **plan** written by `account plan`
   is a normal redacted change plan (mode `0600`, overwrite-guarded).
-- `account` performs no writes to the account in v1.
+
+## Account writes (`account apply` / `account rollback`)
+
+- These are the only commands that write to the account. Each requires an exact
+  confirmation value and there is no `--yes` bypass: `account apply` needs
+  `--confirm` equal to the plan's `planHash`, `account rollback` needs `--confirm`
+  equal to the snapshot's `collectionFingerprint`. A wrong value exits `2` before
+  any network call.
+- `account apply` follows the SPEC section 12 state machine: pull current →
+  refuse to write if the current fingerprint no longer equals the plan's
+  `baseCollectionFingerprint` (exit `5`) → resolve endpoint secret references
+  **only after** that drift check passes → build the complete target collection
+  locally, preserving unknown descriptor fields → write a mandatory private
+  pre-apply snapshot → push the whole collection once with `addonCollectionSet`
+  → pull again and verify the exact fingerprint. An apply never executes a
+  sequence of per-add-on mutations.
+- Secret references are resolved with the same strict rules as an auth-key file
+  (`io.read_secret_file` for `file:` refs). A resolved endpoint must be a
+  well-formed `https` URL; a newly written endpoint is never allowed to be plain
+  `http`. The resolved value never appears in output or an error message.
+- Two plan operations cannot be applied in v1 and are refused with exit `2` and
+  an actionable message: `add` (the plan carries no manifest for a new add-on)
+  and `replaceEndpoint` for a declared-public URL (the plan stores only a
+  redacted label, so the real URL cannot be recovered). `replaceEndpoint` via a
+  secret reference is supported. A plan that removes a `flags.protected` add-on
+  is also refused (Stremio does not allow uninstalling one).
+- Every write is preceded by a snapshot that was successfully persisted to
+  `$STREMIOCTL_DATA_DIR/snapshots/` (`pre-apply-*` / `pre-rollback-*`, mode
+  `0600`). If the snapshot cannot be written, no push is made (exit `6`).
+- After a verification mismatch or an ambiguous write result, exactly one
+  rollback is attempted. A push failure first re-pulls to establish ground
+  truth: if the write did not land, no rollback is made; if it landed despite
+  the error, verification proceeds normally. The rollback result is always
+  reported as `succeeded`, `failed`, or `unknown` and never silently claimed.
+  The whole apply-failure path exits `6`.
+- Verification uses the exact fingerprint the spec mandates. When the account
+  ends up structurally identical (same ordered `(manifest id, transportUrl)`
+  list) but not byte-identical, the report says the server returned a
+  semantically equivalent collection rather than a bare mismatch; the rollback
+  still runs. See `BACKLOG.md` — the first live apply may reveal server-side
+  normalization and, if so, warrant a semantic-equivalence acceptance path.
+- `account rollback` has no drift guard because it is a deliberate restore, but
+  it still writes a mandatory pre-rollback snapshot of the current state first.
 
 ## Network
 

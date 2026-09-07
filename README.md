@@ -26,7 +26,7 @@ python -m stremioctl --version
 `python -m pytest` also enforces line coverage (80% overall) via the
 configuration in `pyproject.toml`.
 
-## Commands (Phases 1–4)
+## Commands (Phases 1–5)
 
 The `backup` and `profile` commands are entirely offline. `probe` and `account`
 make network calls; `account` is the only command that authenticates.
@@ -41,6 +41,8 @@ stremioctl profile diff --current PATH --desired PATH [--out-plan PATH]
 stremioctl probe collection PATH [--json] [--allow-private-network]
 stremioctl account pull --out PATH [--auth-key-file PATH] [--base-url URL]
 stremioctl account plan --desired PATH --out PATH [--auth-key-file PATH] [--base-url URL]
+stremioctl account apply PLAN_PATH --confirm PLAN_HASH [--auth-key-file PATH] [--base-url URL]
+stremioctl account rollback SNAPSHOT_PATH --confirm SNAPSHOT_FINGERPRINT [--auth-key-file PATH] [--base-url URL]
 ```
 
 - `backup inspect` — summarize a collection export: descriptor count, transport
@@ -79,6 +81,29 @@ stremioctl account plan --desired PATH --out PATH [--auth-key-file PATH] [--base
 - `account plan` — pull a fresh collection and diff it against a desired profile,
   producing a redacted change plan exactly like `profile diff` (exit `0`
   converged, `10` with planned changes).
+- `account apply` — apply a change plan to the account. Requires `--confirm` set
+  to the exact `planHash` printed with the plan; there is no `--yes` bypass. It
+  pulls the current collection, refuses to write if it no longer matches the
+  plan's base state (exit `5`), resolves any endpoint secret references, builds
+  the complete target collection locally, writes a mandatory private pre-apply
+  snapshot, pushes the whole collection once (`addonCollectionSet`), then pulls
+  again and verifies the exact fingerprint. On a mismatch or an ambiguous write
+  it makes exactly one rollback attempt and reports the result — `succeeded`,
+  `failed`, or `unknown` — without concealing it (exit `6`). v1 apply cannot
+  **add** an add-on (the plan carries no manifest) or replace an endpoint that
+  was declared as a public URL (the plan stores only a redacted label); both are
+  refused with exit `2`. A `replaceEndpoint` via a secret reference is applied,
+  and a newly written endpoint must be `https`.
+- `account rollback` — restore the account to a previously written snapshot.
+  Requires `--confirm` set to the snapshot's `collectionFingerprint`. There is no
+  drift guard (this is a deliberate restore), but it still takes a mandatory
+  private pre-rollback snapshot of the current state first, then pushes the
+  snapshot's collection once and verifies. Exit `0` when the account matches the
+  snapshot afterwards, `6` otherwise.
+
+Pre-apply and pre-rollback snapshots are written under
+`$STREMIOCTL_DATA_DIR/snapshots/` (mode `0600`, in a `0700` directory). They are
+raw artifacts — keep that directory private.
 
 The auth key is read only from `STREMIO_AUTH_KEY` or `--auth-key-file PATH` (a
 regular file, owned by you, mode `0600`). There is no option that takes the key
@@ -88,8 +113,10 @@ contract and how to obtain a key without giving the CLI a password.
 
 Exit codes follow `SPEC.md` section 9: `0` success, `2` invalid input or
 configuration, `3` a network/remote failure or a `probe` that found an unhealthy
-endpoint, `4` a missing or rejected auth key, `10` a `diff`/`plan` that found
-planned changes. Errors are printed to stderr in redacted form.
+endpoint, `4` a missing or rejected auth key, `5` the account changed since the
+plan was built, `6` an apply or verification failed (the rollback status is
+reported), `10` a `diff`/`plan` that found planned changes. Errors are printed to
+stderr in redacted form.
 
 See [`docs/data-formats.md`](docs/data-formats.md) for the report, profile, plan,
 and schema details and [`docs/security.md`](docs/security.md) for the privacy
@@ -110,6 +137,9 @@ have explicitly declared public and unresolved secret references
 as a precaution; loosen it yourself if you intend to check it in.
 
 `probe collection` fetches manifests only, never content routes, and sends no
-credentials. `account pull` / `account plan` are authenticated but **read-only** —
-there is no write path in v1. Applying a plan, verification, and rollback are
-deferred to Phase 5.
+credentials. `account pull` / `account plan` are authenticated and read-only.
+`account apply` / `account rollback` are the only commands that write to the
+account: each requires an exact confirmation hash, takes a persisted private
+snapshot before any write, sends the whole collection in one `addonCollectionSet`
+call (never a sequence of per-add-on mutations), and reports a rollback result
+plainly rather than claiming success it cannot verify.

@@ -28,7 +28,8 @@ from stremioctl.probing import read_capped_body
 DEFAULT_BASE_URL = "https://api.strem.io"
 AUTH_ENV = "STREMIO_AUTH_KEY"
 INSECURE_LOOPBACK_ENV = "STREMIOCTL_INSECURE_LOOPBACK"
-_METHOD = "addonCollectionGet"
+_GET_METHOD = "addonCollectionGet"
+_SET_METHOD = "addonCollectionSet"
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -56,9 +57,16 @@ class AccountConfig:
         if not 1.0 <= self.timeout <= 120.0:
             raise ValidationError("account timeout must be between 1 and 120 seconds")
 
+    def _api_url(self, method: str) -> str:
+        return self.base_url.rstrip("/") + "/api/" + method
+
     @property
     def collection_get_url(self) -> str:
-        return self.base_url.rstrip("/") + "/api/" + _METHOD
+        return self._api_url(_GET_METHOD)
+
+    @property
+    def collection_set_url(self) -> str:
+        return self._api_url(_SET_METHOD)
 
 
 @dataclass(frozen=True)
@@ -193,6 +201,77 @@ def build_snapshot(pulled: PulledCollection, *, pulled_at: str) -> dict[str, Any
     }
 
 
+def push_addon_collection(
+    auth_key: str,
+    addons: list[dict[str, Any]],
+    cfg: AccountConfig | None = None,
+    *,
+    transport: httpx.BaseTransport | None = None,
+) -> None:
+    """Perform ``addonCollectionSet`` with the complete ordered collection.
+
+    Returns ``None`` on a ``{"result": {"success": true}}`` acknowledgement.
+    Raises :class:`AuthenticationError` (exit 4) for a rejected key or an API
+    error body, and :class:`NetworkError` (exit 3) for a transport failure, a
+    non-``success`` body, or any malformed response. Every message is scrubbed of
+    the auth key.
+
+    The whole target collection is sent in one request (SPEC section 12): an
+    apply never issues a sequence of per-add-on mutations.
+    """
+
+    config = cfg or AccountConfig()
+    body = {"type": "AddonCollectionSet", "authKey": auth_key, "addons": addons}
+    timeout = httpx.Timeout(config.timeout, connect=min(config.timeout, 10.0))
+    try:
+        with httpx.Client(
+            follow_redirects=False, timeout=timeout, transport=transport, http2=False
+        ) as client:
+            with client.stream(
+                "POST",
+                config.collection_set_url,
+                json=body,
+                headers={"accept": "application/json"},
+            ) as response:
+                status = response.status_code
+                if status in (401, 403):
+                    raise AuthenticationError(f"the API rejected the auth key (HTTP {status})")
+                if status >= 400:
+                    raise NetworkError(f"the API request failed (HTTP {status})")
+                raw = read_capped_body(response, _MAX_RESPONSE_BYTES)
+    except (AuthenticationError, NetworkError):
+        raise
+    except httpx.HTTPError as exc:
+        raise NetworkError(
+            _sanitize(f"could not reach the API: {type(exc).__name__}", auth_key)
+        ) from None
+    except Exception as exc:  # pragma: no cover - defensive; keep every path typed and scrubbed
+        raise NetworkError(
+            _sanitize(f"unexpected API client error: {type(exc).__name__}", auth_key)
+        ) from None
+
+    if raw is None:
+        raise NetworkError("the API response exceeded the size limit")
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise NetworkError("the API returned a non-JSON response") from None
+    if not isinstance(payload, dict):
+        raise NetworkError("the API returned an unexpected response shape")
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        code = error.get("code")
+        detail = _sanitize(message, auth_key) if isinstance(message, str) else "no message"
+        code_note = f" (code {code})" if isinstance(code, int) else ""
+        raise AuthenticationError(f"the API returned an error{code_note}: {detail}")
+
+    result = payload.get("result")
+    if not isinstance(result, dict) or result.get("success") is not True:
+        raise NetworkError("the API did not confirm the collection write")
+
+
 __all__ = [
     "AUTH_ENV",
     "DEFAULT_BASE_URL",
@@ -201,5 +280,6 @@ __all__ = [
     "PulledCollection",
     "build_snapshot",
     "fetch_addon_collection",
+    "push_addon_collection",
     "resolve_auth_key",
 ]

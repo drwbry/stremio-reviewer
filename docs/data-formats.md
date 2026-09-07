@@ -200,9 +200,17 @@ plan never contains a resolved URL or secret value.
 
 Every surviving existing descriptor gets exactly one `preserve` entry, so
 `preserve` plus `add` is a complete, contiguous `0..n-1` map of the target
-collection that the apply path (Phase 5) can build from directly. `move` and
+collection that `account apply` builds from directly. `move` and
 `replaceEndpoint` are delta annotations layered on top of the descriptor's
 `preserve` entry, not replacements for it.
+
+`account apply` matches each `preserve` entry back to a current descriptor by
+`manifestId` and, when the descriptor has a transport URL, the keyed fingerprint
+in the entry's `endpoint` label. It refuses two operation kinds it cannot honour
+in v1: `add` (no manifest is carried) and `replaceEndpoint` whose only endpoint
+data is a redacted `endpoint` label (the real URL is unrecoverable). A
+`replaceEndpoint` with an `endpointRef` is resolved at apply time; the resolved
+value must be an `https` URL.
 
 Operations are ordered `remove`, `add`, `move`, `replaceEndpoint`, `preserve`,
 and within a group by `manifestId` then `key`. This order is for human review;
@@ -296,11 +304,52 @@ Fields:
 - `collectionFingerprint` — raw SHA-256 of the canonical `collection` array. It
   is computed with the same function as a change plan's
   `baseCollectionFingerprint`, so a plan built from the same pull carries an
-  identical value. Phase 5 uses this for drift detection and rollback
-  confirmation.
+  identical value. `account apply` compares it for drift detection;
+  `account rollback` takes it as the `--confirm` value.
 - `collection` — the ordered descriptor array, verbatim.
 
 `account plan --out` writes a normal **change plan v1** (see above), not a
 snapshot: it is redacted, mode `0600`, and guarded against overwriting an
 unrelated file. `account plan` does not write a snapshot — the plan's
 `baseCollectionFingerprint`, taken from the fresh pull, is the drift guard.
+
+### Pre-apply and pre-rollback snapshots
+
+`account apply` and `account rollback` write the same **account-snapshot v1**
+artifact automatically, before any write, to
+`$STREMIOCTL_DATA_DIR/snapshots/`:
+
+- `account apply` writes `pre-apply-<timestamp>-<fp12>.json` — the state it is
+  about to change, and the state its own rollback restores to.
+- `account rollback` writes `pre-rollback-<timestamp>-<fp12>.json` — the state
+  before the deliberate restore, so a mistaken rollback is itself recoverable.
+
+`<timestamp>` is `pulledAt` with `-` and `:` removed; `<fp12>` is the first 12
+hex of `collectionFingerprint`. Both files are mode `0600` in a `0700`
+directory. If the snapshot cannot be persisted, no push is made and the command
+exits `6`.
+
+## `account apply` and `account rollback` outcomes
+
+`account apply` prints a short line-by-line report and uses these exit codes:
+
+| Exit | When |
+| ---: | ---- |
+| `0` | The plan was already converged, or the target already matched the account, or the push landed and the exact fingerprint verified. No rollback needed. |
+| `2` | Wrong `--confirm` value, a corrupt or schema-invalid plan, an `add` or public-URL `replaceEndpoint` the plan cannot apply, a protected-add-on removal, or an unresolvable / non-`https` endpoint reference. No write. |
+| `3` | The initial pull failed (no write attempted). |
+| `4` | The auth key was missing or rejected before any write. |
+| `5` | The current collection no longer matches the plan's `baseCollectionFingerprint`. No write. |
+| `6` | A write was attempted and could not be verified. The report states the rollback result: `succeeded`, `failed`, or `unknown`. |
+
+`account rollback` exits `0` when the account matches the snapshot afterwards and
+`6` otherwise (with the same `succeeded` / `failed` / `unknown` wording); `2` for
+a wrong `--confirm` or a corrupt snapshot; `3`/`4` for pull/auth failures before
+the write.
+
+Verification is the exact fingerprint SPEC section 12 mandates. If the account
+ends up structurally identical (same ordered `(manifest id, transportUrl)` list)
+but not byte-identical, the report says so — "semantically equivalent but not
+byte-identical" — and the single rollback still runs. `BACKLOG.md` tracks this:
+the first real apply may show server-side normalization and justify a
+semantic-equivalence acceptance path.

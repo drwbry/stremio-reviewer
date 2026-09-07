@@ -148,9 +148,46 @@ Provide the key to `stremioctl` as either:
 To invalidate a key, sign out of that session in a Stremio app; the server
 revokes it. There is no local revocation.
 
-## Not implemented in Phase 4
+## Request / response — `addonCollectionSet` (Phase 5)
 
-- `addonCollectionSet` (`{ "type": "AddonCollectionSet", "authKey", "addons": [...] }`,
-  → `{ "result": { "success": true } }`) — Phase 5.
+Implemented in Phase 5 as `stremioctl.account.push_addon_collection`, used by
+`account apply` and `account rollback`.
+
+Sources inspected (same `stremio-core` tree as above unless noted):
+
+| What | Path | Detail |
+| ---- | ---- | ------ |
+| Request enum, path, method | `src/types/api/request.rs` | `APIRequest::AddonCollectionSet { auth_key: AuthKey, addons: Vec<Descriptor> }`, `#[serde(tag = "type")] #[serde(rename_all = "camelCase")]`, `path() -> "addonCollectionSet"`, POST |
+| Success envelope | `src/types/api/response.rs` | `pub struct SuccessResponse { pub success: True }` |
+| `True` type | `src/types/true.rs` | deserializes **only** from JSON `true`; serializes as `true` |
+| Exact wire body + response | `src/unit_tests/ctx/push_addons_to_api.rs` | request `{"type":"AddonCollectionSet","authKey":"…","addons":[{"manifest":{…},"transportUrl":"…","flags":{"official":false,"protected":false}}]}` → POST `https://api.strem.io/api/addonCollectionSet` → `APIResult::Ok(SuccessResponse { success: True {} })` |
+
+Request body:
+
+```json
+{ "type": "AddonCollectionSet", "authKey": "<AUTH_KEY>", "addons": [ <Descriptor>, ... ] }
+```
+
+`addons` is the **complete, ordered** collection. There is no partial or
+per-add-on mutation call; an apply sends the whole target once.
+
+Response:
+
+```json
+{ "result": { "success": true } }
+```
+
+`stremioctl` treats anything other than `result.success === true` as a failure:
+a body-level `error` object or HTTP 401/403 → `AuthenticationError` (exit 4);
+any other non-2xx, a transport error, a non-JSON body, or `success` not exactly
+`true` → `NetworkError` (exit 3). Messages are scrubbed of the auth key exactly
+as on the read path.
+
+The auth key travels only in the JSON body, never a URL, header, or log line —
+identical to `addonCollectionGet`.
+
+## Not implemented
+
 - Any email/password `login` / `register` / `loginWithToken` flow — out of scope
   by SPEC §3. The user supplies an already-issued auth key.
+- The `link` device-pairing exchange is described above but not automated in v1.

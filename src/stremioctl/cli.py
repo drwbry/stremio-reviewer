@@ -26,6 +26,7 @@ from stremioctl.account import (
     fetch_addon_collection,
     resolve_auth_key,
 )
+from stremioctl.apply import apply_plan, ensure_snapshots_dir, rollback_snapshot
 from stremioctl.diff import build_change_plan, render_plan_human
 from stremioctl.errors import StremioctlError, ValidationError
 from stremioctl.io import assert_private_output_dir, atomic_write_text, load_json_document
@@ -513,6 +514,97 @@ def account_plan(
             raise type(exc)(sanitize_text(exc.message, secrets_to_hide=(auth_key,))) from None
         render_plan_human(plan, _stdout_console())
         return 10 if plan["operations"] else 0
+
+    _run(action)
+
+
+@account_app.command("apply")
+def account_apply(
+    plan_path: Annotated[
+        Path, typer.Argument(help="Change plan from `account plan` or `profile diff`.")
+    ],
+    confirm: Annotated[
+        str,
+        typer.Option(
+            "--confirm",
+            help="The exact planHash printed with the plan. Required; there is no --yes bypass.",
+        ),
+    ],
+    auth_key_file: Annotated[
+        Path | None, typer.Option("--auth-key-file", help=_AUTH_KEY_FILE_HELP)
+    ] = None,
+    base_url: Annotated[
+        str, typer.Option("--base-url", help=_BASE_URL_HELP)
+    ] = DEFAULT_BASE_URL,
+) -> None:
+    """Apply a change plan after verifying the confirmation hash and the current account state."""
+
+    def action() -> int:
+        key = load_or_create_redaction_key()
+        cfg = AccountConfig(base_url=base_url)
+        plan = load_json_document(plan_path)
+        # Verify the private snapshot directory before the key file or the network.
+        ensure_snapshots_dir()
+        auth_key = resolve_auth_key(auth_key_file=auth_key_file)
+        try:
+            outcome = apply_plan(
+                plan=plan,
+                confirm=confirm,
+                key=key,
+                auth_key=auth_key,
+                cfg=cfg,
+                now=_utc_now_z(),
+            )
+        except StremioctlError as exc:  # re-scrub in case a message ever carries the key
+            raise type(exc)(sanitize_text(exc.message, secrets_to_hide=(auth_key,))) from None
+        console = _stdout_console()
+        for line in outcome.lines:
+            console.print(line)
+        return outcome.exit_code
+
+    _run(action)
+
+
+@account_app.command("rollback")
+def account_rollback(
+    snapshot_path: Annotated[
+        Path, typer.Argument(help="A pre-apply account snapshot written by a previous apply.")
+    ],
+    confirm: Annotated[
+        str,
+        typer.Option(
+            "--confirm", help="The snapshot's collectionFingerprint. Required; no --yes bypass."
+        ),
+    ],
+    auth_key_file: Annotated[
+        Path | None, typer.Option("--auth-key-file", help=_AUTH_KEY_FILE_HELP)
+    ] = None,
+    base_url: Annotated[
+        str, typer.Option("--base-url", help=_BASE_URL_HELP)
+    ] = DEFAULT_BASE_URL,
+) -> None:
+    """Restore the account to a captured snapshot after verifying its fingerprint."""
+
+    def action() -> int:
+        cfg = AccountConfig(base_url=base_url)
+        snapshot = load_json_document(snapshot_path)
+        # Verify the private snapshot directory before the key file or the network.
+        ensure_snapshots_dir()
+        auth_key = resolve_auth_key(auth_key_file=auth_key_file)
+        try:
+            outcome = rollback_snapshot(
+                snapshot=snapshot,
+                confirm=confirm,
+                auth_key=auth_key,
+                cfg=cfg,
+                now=_utc_now_z(),
+            )
+        except StremioctlError as exc:  # re-scrub in case a message ever carries the key
+            raise type(exc)(sanitize_text(exc.message, secrets_to_hide=(auth_key,))) from None
+        console = _stdout_console()
+        for line in outcome.lines:
+            console.print(line)
+        return outcome.exit_code
 
     _run(action)
 

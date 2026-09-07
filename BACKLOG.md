@@ -38,19 +38,24 @@ Status key: **open** (still needs doing) · **resolved** (done, kept for history
 
 ## Phase 2 — profiles and plans
 
-- **open — `add` operations have no manifest source offline.** `profile diff`
-  can emit an `add` operation from a desired profile, but offline planning has
-  no manifest for the new add-on. A real apply needs the manifest; wiring that
-  in depends on Phase 3 (probe/fetch) and Phase 5 (apply). Until then an `add`
-  op only records intent (key, manifestId, position, endpoint reference).
+- **open — `add` operations cannot be applied in v1.** `profile diff` can emit
+  an `add` operation from a desired profile, but the plan carries no manifest
+  for the new add-on, so `account apply` refuses a plan containing one (exit 2,
+  actionable message). A `replaceEndpoint` whose endpoint is a declared-public
+  URL is refused for the same reason — the plan stores only a redacted label.
+  Closing this is a small Phase 2 change: emit the `publicUrl` verbatim on
+  `add` / `replaceEndpoint` and add the schema field, so at least the
+  public-endpoint path becomes end-to-end functional. Adding a new add-on still
+  needs a manifest source (probe/fetch) as well.
 
-- **open — SPEC §10 matching step 1 is unimplemented.** The documented match
-  order starts with "explicit local `key` mapping saved in private state". No
-  private key-map store exists yet, so matching begins at step 2 (`manifestId`
-  + keyed transport fingerprint). This lands in **Phase 5**, not Phase 4: a
-  read-only phase has nothing to populate the map with — the identity that
-  belongs in it is confirmed at apply time. Adding it to `account plan` would
-  give a read-only command a side effect on private state.
+- **open — SPEC §10 matching step 1 is still unimplemented.** The documented
+  match order starts with "explicit local `key` mapping saved in private
+  state". No private key-map store exists. `account apply` re-identifies each
+  `preserve` entry against the fresh pull by `manifestId` + the keyed transport
+  fingerprint carried in the plan's redacted `endpoint` label, which works
+  because the drift guard has already proven the collection is byte-identical
+  to the plan's base. A persisted key map would let identity survive an
+  endpoint change between plan and apply; add it if that case comes up.
 
 - **open — `backup redact --out` overwrite gap.** `profile init` and
   `profile diff` refuse to overwrite an input path or an unrelated existing
@@ -114,3 +119,61 @@ Status key: **open** (still needs doing) · **resolved** (done, kept for history
   By SPEC §3 the user supplies an already-issued auth key. If a future version
   wants a `link`-code flow (device pairing, no password), it is a separate
   design; do not add email/password login.
+
+---
+
+## Phase 5 — apply, verification, and rollback
+
+- **open — first live apply may reveal server-side normalization.**
+  Verification uses the exact fingerprint SPEC §12 mandates: push target →
+  re-pull → compare `collection_fingerprint`. The Rust upstream test shows the
+  client normalizes transport URLs (`https://x` → `https://x/`), so the server
+  may return descriptors that are semantically identical but not byte-identical
+  to what was sent. When that happens `account apply` reports "semantically
+  equivalent but not byte-identical" and still runs its single rollback, so a
+  correct apply on a fresh account can read as a failed apply **and** a failed
+  rollback even though the collection is fine throughout. The report already
+  distinguishes this from a real mismatch (it compares the ordered
+  `(manifest id, transportUrl)` structure). If a real run confirms the server
+  normalizes, add a semantic-equivalence acceptance path: treat a structural
+  match with a hash-only difference as success, with a loud warning, and skip
+  the rollback. Needs a manually authorized run against a disposable account
+  first (`STREMIOCTL_LIVE_TESTS=1` + `STREMIOCTL_DISPOSABLE_ACCOUNT=1`).
+
+- **open — a newly written endpoint must be `https`.** `resolve_endpoint_ref`
+  refuses a resolved `replaceEndpoint` target that uses plain `http`, even
+  though the profile `policy.requireHttps` value is not threaded through to the
+  apply path. This is deliberate for v1 (installing an insecure endpoint is an
+  active choice) but it means a user who legitimately wants an `http` loopback
+  endpoint via a secret reference cannot apply it. Wire `policy.requireHttps`
+  (and the other `policy` network knobs, as already noted for the prober and
+  `account`) into the apply path if that case is real.
+
+- **open — pre-apply / pre-rollback snapshots are never pruned.** Every apply
+  and every rollback writes a snapshot under
+  `$STREMIOCTL_DATA_DIR/snapshots/` and nothing deletes them. They are small,
+  but add a retention policy (keep N most recent, or an explicit
+  `account snapshots prune`) before this sees heavy use.
+
+- **open — a plan that removes every descriptor pushes an empty collection.**
+  `construct_target` builds `[]` and `account apply` sends an empty `addons`
+  array; nothing special-cases it. This is in-spec — it is the explicit intent
+  behind an exact `--confirm` hash, and the protected-add-on guard already
+  blocks it for accounts that have protected defaults — but add a confirmation
+  line ("this will remove all N add-ons") to the apply report if it ever feels
+  too quiet.
+
+- **open — a same-second re-apply can overwrite its own snapshot.** The
+  snapshot filename is `<prefix>-<timestamp>-<fp12>.json` at one-second
+  precision. Two applies in the same second against the same base state produce
+  the same name; `atomic_write_text` would overwrite the first. The content is
+  identical in that case, so it is harmless today, but add sub-second precision
+  or a short random suffix if snapshots ever need to be individually durable.
+
+- **open — `apply.py` has a few uncovered defensive branches.** Line coverage
+  is ~94% (above the SPEC §14 90% bar). The gaps are guardrails that a
+  well-formed plan cannot reach: an out-of-range `remove` `fromIndex`, a
+  non-integer `finalIndex`, a `replaceEndpoint` targeting a slot with no
+  `preserve`, and the `_write_snapshot` `SecurityError` re-raise. Add direct
+  unit tests for these if the per-module coverage gate (also open, cross-cutting)
+  is ever enforced strictly.
