@@ -1,7 +1,7 @@
 # stremioctl
 
-`stremioctl` is a local-first CLI for safely inspecting and, in later phases,
-managing Stremio add-on collections. It is designed so that raw exports and
+`stremioctl` is a local-first CLI for safely inspecting and managing Stremio
+add-on collections. It is designed so that raw exports and
 configured transport URLs stay private.
 
 ## Development
@@ -18,15 +18,21 @@ Run the checks:
 
 ```text
 python -m pytest
+coverage report --include='src/stremioctl/privacy.py' --fail-under=90
+coverage report --include='src/stremioctl/diff.py,src/stremioctl/plans.py' --fail-under=90
+coverage report --include='src/stremioctl/account.py' --fail-under=90
+coverage report --include='src/stremioctl/apply.py' --fail-under=90
+coverage report --include='src/stremioctl/aiostreams.py' --fail-under=90
 ruff check .
 mypy src
+python -m build
 python -m stremioctl --version
 ```
 
 `python -m pytest` also enforces line coverage (80% overall) via the
 configuration in `pyproject.toml`.
 
-## Commands (Phases 1–5)
+## Commands (Phases 1–6)
 
 The `backup` and `profile` commands are entirely offline. `probe` and `account`
 make network calls; `account` is the only command that authenticates.
@@ -43,6 +49,9 @@ stremioctl account pull --out PATH [--auth-key-file PATH] [--base-url URL]
 stremioctl account plan --desired PATH --out PATH [--auth-key-file PATH] [--base-url URL]
 stremioctl account apply PLAN_PATH --confirm PLAN_HASH [--auth-key-file PATH] [--base-url URL]
 stremioctl account rollback SNAPSHOT_PATH --confirm SNAPSHOT_FINGERPRINT [--auth-key-file PATH] [--base-url URL]
+stremioctl aiostreams validate-backup PATH
+stremioctl aiostreams redact-backup PATH --out PATH
+stremioctl aiostreams promote --profile PATH --standby KEY --out-plan PATH [--auth-key-file PATH] [--base-url URL]
 ```
 
 - `backup inspect` — summarize a collection export: descriptor count, transport
@@ -90,20 +99,33 @@ stremioctl account rollback SNAPSHOT_PATH --confirm SNAPSHOT_FINGERPRINT [--auth
   again and verifies the exact fingerprint. On a mismatch or an ambiguous write
   it makes exactly one rollback attempt and reports the result — `succeeded`,
   `failed`, or `unknown` — without concealing it (exit `6`). v1 apply cannot
-  **add** an add-on (the plan carries no manifest) or replace an endpoint that
-  was declared as a public URL (the plan stores only a redacted label); both are
-  refused with exit `2`. A `replaceEndpoint` via a secret reference is applied,
-  and a newly written endpoint must be `https`.
+  **add** an add-on (the plan carries no manifest), which is refused with exit
+  `2`. A `replaceEndpoint` is applied from either a delayed secret reference or
+  a URL explicitly declared public in the desired profile. Human output stays
+  redacted; the plan carries a declared-public URL verbatim so it can apply it.
+  Every newly written endpoint must be `https`. A Phase 6 replacement also
+  binds the target manifest id and fingerprint; apply refetches it after the
+  account drift guard and replaces the descriptor manifest and URL together.
 - `account rollback` — restore the account to a previously written snapshot.
   Requires `--confirm` set to the snapshot's `collectionFingerprint`. There is no
   drift guard (this is a deliberate restore), but it still takes a mandatory
   private pre-rollback snapshot of the current state first, then pushes the
   snapshot's collection once and verifies. Exit `0` when the account matches the
   snapshot afterwards, `6` otherwise.
+- `aiostreams validate-backup` — validate a native AIOStreams `UserData` export
+  and report structural/privacy findings without printing stored values.
+- `aiostreams redact-backup` — write a shape-preserving, mode-`0600` copy with
+  credentials, complete URLs, and risky script/expression/template text masked.
+- `aiostreams promote` — pull current Stremio state, resolve distinct primary
+  and standby URL references locally, probe only the selected standby manifest,
+  discover its possibly different UUID-derived identity, and write a
+  secret-reference plan bound to that target manifest fingerprint. It does not
+  mutate the account; review and apply the plan through `account apply`.
 
 Pre-apply and pre-rollback snapshots are written under
 `$STREMIOCTL_DATA_DIR/snapshots/` (mode `0600`, in a `0700` directory). They are
-raw artifacts — keep that directory private.
+raw artifacts — keep that directory private. Filenames include a random suffix
+to avoid same-second collisions.
 
 The auth key is read only from `STREMIO_AUTH_KEY` or `--auth-key-file PATH` (a
 regular file, owned by you, mode `0600`). There is no option that takes the key
@@ -121,6 +143,8 @@ stderr in redacted form.
 See [`docs/data-formats.md`](docs/data-formats.md) for the report, profile, plan,
 and schema details and [`docs/security.md`](docs/security.md) for the privacy
 model. [`BACKLOG.md`](BACKLOG.md) tracks deferred work and known gaps.
+See [`docs/phase-6-playbook.md`](docs/phase-6-playbook.md) for the exact Phase 6
+unblocking, implementation, promotion, verification, and rollback procedure.
 
 ## Handling raw exports
 

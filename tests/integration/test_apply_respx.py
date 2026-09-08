@@ -125,6 +125,28 @@ def test_apply_writes_a_snapshot_then_pushes_once_and_verifies() -> None:
 
 
 @respx.mock
+def test_apply_that_removes_every_addon_prints_an_explicit_warning() -> None:
+    remove_all = {
+        "schemaVersion": 1,
+        "name": "empty",
+        "addons": [
+            {
+                "key": f"remove-{index}",
+                "match": {"manifestId": descriptor["manifest"]["id"]},
+                "state": "absent",
+                "manage": ["state"],
+            }
+            for index, descriptor in enumerate(ABC)
+        ],
+    }
+    respx.post(GET_URL).mock(side_effect=[_get(ABC), _get([])])
+    respx.post(SET_URL).mock(side_effect=[_set_ok()])
+    outcome = _apply(_plan(ABC, remove_all))
+    assert outcome.exit_code == 0
+    assert any("remove all 3 add-ons" in line for line in outcome.lines)
+
+
+@respx.mock
 def test_replace_endpoint_via_secret_ref_is_resolved_only_at_apply_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

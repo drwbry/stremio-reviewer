@@ -12,9 +12,15 @@ from typing import Any
 
 import pytest
 
-from stremioctl.apply import construct_target, resolve_endpoint_ref
+from stremioctl.account import PulledCollection
+from stremioctl.apply import (
+    _write_snapshot,
+    construct_target,
+    resolve_endpoint_ref,
+    resolve_target_manifest,
+)
 from stremioctl.diff import build_change_plan
-from stremioctl.errors import ValidationError
+from stremioctl.errors import DriftError, NetworkError, SecurityError, ValidationError
 from stremioctl.fingerprints import collection_fingerprint
 from stremioctl.models import parse_collection
 from stremioctl.plans import build_plan_document
@@ -52,6 +58,20 @@ def _make_plan(current: list[dict[str, Any]], profile_doc: dict[str, Any]) -> di
 
 def _descriptors(collection: list[dict[str, Any]]) -> list[Any]:
     return list(parse_collection(collection).descriptors)
+
+
+def test_same_second_snapshots_get_distinct_names() -> None:
+    current = [_desc("org.a", url=_url("org.a"))]
+    pulled = PulledCollection(
+        addons=current,
+        last_modified=None,
+        fingerprint=collection_fingerprint(current),
+        base_url="https://api.strem.io",
+    )
+    first = _write_snapshot(pulled, "2026-09-06T00:00:00Z", "pre-apply")
+    second = _write_snapshot(pulled, "2026-09-06T00:00:00Z", "pre-apply")
+    assert first != second
+    assert first.exists() and second.exists()
 
 
 # --- resolve_endpoint_ref -------------------------------------------------------
@@ -102,6 +122,53 @@ def test_resolved_value_must_be_a_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("STREMIOCTL_TEST_EP", "not-a-url")
     with pytest.raises(ValidationError, match="not a valid http"):
         resolve_endpoint_ref("env:STREMIOCTL_TEST_EP")
+
+
+def test_target_manifest_is_refetched_and_bound_to_reviewed_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = {
+        "id": "org.target",
+        "name": "Target",
+        "version": "2.0.0",
+        "resources": [],
+        "types": [],
+    }
+    monkeypatch.setattr(
+        "stremioctl.apply.probe_manifest_url",
+        lambda *_args, **_kwargs: ({"status": "healthy"}, manifest),
+    )
+    assert resolve_target_manifest(
+        HTTPS, "org.target", collection_fingerprint(manifest), KEY
+    ) == manifest
+
+
+def test_target_manifest_drift_or_probe_failure_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = {"id": "org.target"}
+    monkeypatch.setattr(
+        "stremioctl.apply.probe_manifest_url",
+        lambda *_args, **_kwargs: ({"status": "healthy"}, manifest),
+    )
+    with pytest.raises(DriftError, match="changed since planning"):
+        resolve_target_manifest(HTTPS, "org.target", "0" * 64, KEY)
+
+    monkeypatch.setattr(
+        "stremioctl.apply.probe_manifest_url",
+        lambda *_args, **_kwargs: ({"status": "unreachable"}, None),
+    )
+    with pytest.raises(NetworkError, match="apply-time manifest check"):
+        resolve_target_manifest(HTTPS, "org.target", "0" * 64, KEY)
+
+
+def test_malformed_resolved_url_is_rejected_without_leaking_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STREMIOCTL_TEST_EP", "https://[secret-invalid")
+    with pytest.raises(ValidationError, match="not a valid http") as excinfo:
+        resolve_endpoint_ref("env:STREMIOCTL_TEST_EP")
+    assert "secret-invalid" not in str(excinfo.value)
 
 
 def test_resolved_plain_http_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -203,7 +270,7 @@ def test_add_operation_is_refused() -> None:
         construct_target(plan, _descriptors(current), KEY)
 
 
-def test_replace_endpoint_with_only_a_public_label_is_refused() -> None:
+def test_replace_endpoint_via_declared_public_url_overrides_the_slot() -> None:
     current = [_desc("org.a", url=_url("org.a")), _desc("org.b", url=_url("org.b"))]
     plan = _make_plan(
         current,
@@ -218,7 +285,33 @@ def test_replace_endpoint_with_only_a_public_label_is_refused() -> None:
             ],
         },
     )
-    with pytest.raises(ValidationError, match="declared as a public URL"):
+    replacement = "https://replacement.example.invalid/manifest.json"
+    assert next(op for op in plan["operations"] if op["op"] == "replaceEndpoint")[
+        "publicUrl"
+    ] == replacement
+    target = construct_target(plan, _descriptors(current), KEY)
+    assert target[0]["transportUrl"] == replacement
+
+
+def test_replace_endpoint_via_declared_public_http_url_is_refused() -> None:
+    current = [_desc("org.a", url=_url("org.a"))]
+    plan = _make_plan(
+        current,
+        {
+            "schemaVersion": 1,
+            "name": "t",
+            "addons": [
+                {
+                    "key": "a",
+                    "match": {"manifestId": "org.a"},
+                    "state": "present",
+                    "endpoint": {"publicUrl": "http://replacement.example.invalid/manifest.json"},
+                    "manage": ["state", "endpoint"],
+                }
+            ],
+        },
+    )
+    with pytest.raises(ValidationError, match="must use https"):
         construct_target(plan, _descriptors(current), KEY)
 
 
@@ -290,6 +383,88 @@ def test_non_contiguous_target_is_rejected() -> None:
         construct_target(plan, _descriptors(current), KEY)
 
 
+def test_remove_with_out_of_range_index_is_rejected() -> None:
+    current = [_desc("org.a", url=_url("org.a"))]
+    plan = _hand_plan(
+        [{"op": "remove", "manifestId": "org.a", "fromIndex": 4, "reason": "test"}],
+        collection_fingerprint(current),
+    )
+    with pytest.raises(ValidationError, match="out of range"):
+        construct_target(plan, _descriptors(current), KEY)
+
+
+def test_remove_whose_manifest_does_not_match_index_is_rejected() -> None:
+    current = [_desc("org.a", url=_url("org.a"))]
+    plan = _hand_plan(
+        [{"op": "remove", "manifestId": "org.other", "fromIndex": 0, "reason": "test"}],
+        collection_fingerprint(current),
+    )
+    with pytest.raises(ValidationError, match="does not line up"):
+        construct_target(plan, _descriptors(current), KEY)
+
+
+def test_preserve_with_non_integer_final_index_is_rejected() -> None:
+    current = [_desc("org.a", url=_url("org.a"))]
+    plan = _hand_plan(
+        [{"op": "preserve", "manifestId": "org.a", "finalIndex": "zero"}],
+        collection_fingerprint(current),
+    )
+    with pytest.raises(ValidationError, match="valid finalIndex"):
+        construct_target(plan, _descriptors(current), KEY)
+
+
+def test_replace_endpoint_without_a_preserved_slot_is_rejected() -> None:
+    current = [_desc("org.a", url=_url("org.a"))]
+    plan = _hand_plan(
+        [
+            {
+                "op": "replaceEndpoint",
+                "manifestId": "org.a",
+                "finalIndex": 0,
+                "endpointRef": "env:SHOULD_NOT_BE_READ",
+            }
+        ],
+        collection_fingerprint(current),
+    )
+    with pytest.raises(ValidationError, match="no preserved add-on"):
+        construct_target(plan, _descriptors(current), KEY)
+
+
+def test_replace_endpoint_with_two_sources_is_rejected() -> None:
+    current = [_desc("org.a", url=_url("org.a"))]
+    plan = _hand_plan(
+        [
+            {
+                "op": "replaceEndpoint",
+                "manifestId": "org.a",
+                "finalIndex": 0,
+                "endpointRef": "env:SHOULD_NOT_BE_READ",
+                "publicUrl": "https://public.example.invalid/manifest.json",
+            }
+        ],
+        collection_fingerprint(current),
+    )
+    with pytest.raises(ValidationError, match="exactly one endpoint"):
+        construct_target(plan, _descriptors(current), KEY)
+
+
+def test_snapshot_security_error_is_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
+    current = [_desc("org.a", url=_url("org.a"))]
+    pulled = PulledCollection(
+        addons=current,
+        last_modified=None,
+        fingerprint=collection_fingerprint(current),
+        base_url="https://api.strem.io",
+    )
+
+    def fail_securely(*_args: Any, **_kwargs: Any) -> None:
+        raise SecurityError("unsafe output")
+
+    monkeypatch.setattr("stremioctl.apply.atomic_write_text", fail_securely)
+    with pytest.raises(SecurityError, match="unsafe output"):
+        _write_snapshot(pulled, "2026-09-06T00:00:00Z", "pre-apply")
+
+
 def test_replace_endpoint_landing_on_the_wrong_slot_is_refused() -> None:
     current = [_desc("org.a", url=_url("org.a")), _desc("org.b", url=_url("org.b"))]
     plan = _hand_plan(
@@ -323,6 +498,26 @@ def test_plan_load_rejects_a_schema_violation() -> None:
 
     with pytest.raises(ValidationError, match="change-plan-v1"):
         _load_validated_plan({"schemaVersion": 1, "operations": "not-a-list"})
+
+
+def test_plan_load_rejects_two_endpoint_sources() -> None:
+    from stremioctl.apply import _load_validated_plan
+
+    current = [_desc("org.a", url=_url("org.a"))]
+    plan = _hand_plan(
+        [
+            {
+                "op": "replaceEndpoint",
+                "manifestId": "org.a",
+                "finalIndex": 0,
+                "endpointRef": "env:STREMIOCTL_TEST_EP",
+                "publicUrl": HTTPS,
+            }
+        ],
+        collection_fingerprint(current),
+    )
+    with pytest.raises(ValidationError, match="change-plan-v1"):
+        _load_validated_plan(plan)
 
 
 def test_corrupt_plan_hash_is_rejected_by_apply(monkeypatch: pytest.MonkeyPatch) -> None:

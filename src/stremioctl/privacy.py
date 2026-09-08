@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -187,8 +188,12 @@ def load_or_create_redaction_key(app_dir: Path | None = None) -> bytes:
         if path.is_symlink():
             raise SecurityError("Refusing symlink for redaction key")
         try:
-            mode = os.stat(path).st_mode
-            if mode & 0o077:
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode):
+                raise SecurityError("Redaction key must be a regular file")
+            if hasattr(os, "getuid") and info.st_uid != os.getuid():
+                raise SecurityError("Redaction key is not owned by the current user")
+            if stat.S_IMODE(info.st_mode) & 0o077:
                 raise SecurityError("Redaction key must not be accessible by group or other")
             data = path.read_bytes()
         except OSError as exc:

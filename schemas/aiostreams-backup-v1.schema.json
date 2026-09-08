@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stremioctl.invalid/schemas/aiostreams-backup-v1.schema.json",
+  "title": "AIOStreams native UserData backup v1 adapter",
+  "description": "A deliberately permissive, lossless adapter for a native AIOStreams add-on configuration export. Unknown fields are retained for forward compatibility.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["formatter", "sortCriteria", "presets"],
+  "properties": {
+    "formatter": {"type": "object"},
+    "sortCriteria": {
+      "type": "object",
+      "required": ["global"],
+      "properties": {
+        "global": {"type": "array"}
+      },
+      "additionalProperties": true
+    },
+    "presets": {"type": "array"},
+    "services": {"type": "array"},
+    "variants": {"type": "array"},
+    "healthChecks": {"type": "array"},
+    "proxy": {"type": "object"},
+    "appliedTemplates": {"type": "array"}
+  }
+}

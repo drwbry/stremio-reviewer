@@ -147,5 +147,23 @@ def test_redaction_key_rejects_symlink(tmp_path: Path) -> None:
         load_or_create_redaction_key(directory)
 
 
+def test_redaction_key_rejects_non_regular_file(tmp_path: Path) -> None:
+    directory = _fresh_private_dir(tmp_path)
+    (directory / "redaction.key").mkdir()
+    with pytest.raises(SecurityError, match="regular file"):
+        load_or_create_redaction_key(directory)
+
+
+def test_redaction_key_rejects_wrong_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = _fresh_private_dir(tmp_path)
+    load_or_create_redaction_key(directory)
+    monkeypatch.setattr("stremioctl.privacy.ensure_private_app_dir", lambda _path: directory)
+    monkeypatch.setattr(os, "getuid", lambda: directory.stat().st_uid + 1)
+    with pytest.raises(SecurityError, match="Redaction key is not owned"):
+        load_or_create_redaction_key(directory)
+
+
 def assert_no_sentinels_in(blob: str) -> None:
     assert "SENTINEL_" not in blob

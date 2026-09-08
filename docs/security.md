@@ -1,7 +1,7 @@
 # Security notes
 
 The full requirements are in [`SPEC.md`](../SPEC.md) section 8. This is a summary
-of what Phases 1–4 actually enforce.
+of what Phases 1–6 enforce.
 
 ## Sensitive data
 
@@ -10,6 +10,10 @@ of what Phases 1–4 actually enforce.
 - Raw exports are never committed, logged, pasted, or placed in test fixtures.
   Tests use synthetic fixtures whose secrets are obvious sentinels
   (`SENTINEL_...`), and assert those never reach any output.
+- Native AIOStreams exports are also sensitive even when **Exclude Credentials**
+  was selected: custom URLs and arbitrary free text can remain. The private
+  reference sample is ignored by Git and mode `0600`; tests use a separately
+  authored synthetic fixture.
 
 ## Redaction
 
@@ -29,8 +33,9 @@ of what Phases 1–4 actually enforce.
   `rename`, followed by a directory `fsync`. Redacted exports, generated
   profiles (`profile init`), and change plans (`profile diff --out-plan`) are
   all mode `0600`.
-- `backup redact` refuses to overwrite its own input; `profile init` and
-  `profile diff` refuse an output path that resolves to one of their inputs.
+- `backup redact` refuses every existing output target because its array-shaped
+  artifact has no reliable type marker. `profile init` and `profile diff`
+  refuse an output path that resolves to one of their inputs.
 
 ## Desired profiles and change plans
 
@@ -42,15 +47,20 @@ of what Phases 1–4 actually enforce.
   variable, open the file, or run the POSIX permission checks from `SPEC.md`
   section 7.2 — those belong to the phase that resolves the value.
 - A change plan carries secret *references* verbatim and redacted endpoint
-  *labels*, never a resolved URL or secret value. `baseCollectionFingerprint` is
-  the raw SHA-256 of the collection: one-way, and not a transport URL.
+  *labels*, never a resolved secret value. A URL explicitly declared public in
+  the desired profile is also carried verbatim so apply can honour it; this is
+  the only complete endpoint URL allowed in a plan. `baseCollectionFingerprint`
+  is the raw SHA-256 of the collection: one-way, and not a transport URL.
+- Phase 6 plans bind a replacement to a target manifest id and canonical SHA-256
+  fingerprint. They do not store the fetched manifest body. Apply resolves the
+  URL and refetches the target only after the account base-state drift guard.
 - `assert_no_sentinels` guards the serialized plan and the generated profile
   before either is written, exactly as it guards Phase 1 output.
 
 ## Probing (`probe collection`)
 
-- `probe collection` is the only command that touches the network. It is
-  read-only: it issues one `GET` per descriptor to the transport URL and never
+- `probe collection` and the manifest checks used by `aiostreams promote` and
+  Phase 6 apply are read-only: they issue a `GET` only to the transport URL and never
   requests `catalog`, `meta`, `stream`, or `subtitles` routes.
 - Before any connection, the host is resolved and **every** returned address is
   checked. Loopback, link-local, multicast, unspecified, reserved, and private
@@ -62,8 +72,10 @@ of what Phases 1–4 actually enforce.
 - Redirects: at most one, and only same-origin. A cross-origin `Location` or a
   second redirect is `unreachable`. The redirect target is re-resolved and
   re-checked before it is followed.
-- The response body is streamed and abandoned past 2 MiB. Only `manifest.id` is
-  read from the parsed body; the body itself is never stored or reported.
+- The response body is streamed and abandoned past 2 MiB. The collection audit
+  reads `manifest.id` and never stores or reports the body. Phase 6 temporarily
+  retains the selected manifest in memory only long enough to fingerprint it or
+  construct the target descriptor; no response body enters a plan or report.
 - Every `detail` string is run through `sanitize_text`, so an `httpx` exception
   that embeds the request URL cannot leak it. The audit report and its schema
   allow a redacted endpoint label (`scheme://host/<redacted>#<fp>`) but no
@@ -116,12 +128,11 @@ of what Phases 1–4 actually enforce.
   (`io.read_secret_file` for `file:` refs). A resolved endpoint must be a
   well-formed `https` URL; a newly written endpoint is never allowed to be plain
   `http`. The resolved value never appears in output or an error message.
-- Two plan operations cannot be applied in v1 and are refused with exit `2` and
-  an actionable message: `add` (the plan carries no manifest for a new add-on)
-  and `replaceEndpoint` for a declared-public URL (the plan stores only a
-  redacted label, so the real URL cannot be recovered). `replaceEndpoint` via a
-  secret reference is supported. A plan that removes a `flags.protected` add-on
-  is also refused (Stremio does not allow uninstalling one).
+- `add` cannot be applied in v1 and is refused with exit `2` because the plan
+  carries no manifest for a new add-on. `replaceEndpoint` supports both delayed
+  secret references and explicitly declared-public URLs. A plan that removes a
+  `flags.protected` add-on is also refused (Stremio does not allow uninstalling
+  one).
 - Every write is preceded by a snapshot that was successfully persisted to
   `$STREMIOCTL_DATA_DIR/snapshots/` (`pre-apply-*` / `pre-rollback-*`, mode
   `0600`). If the snapshot cannot be written, no push is made (exit `6`).
@@ -140,9 +151,29 @@ of what Phases 1–4 actually enforce.
 - `account rollback` has no drift guard because it is a deliberate restore, but
   it still writes a mandatory pre-rollback snapshot of the current state first.
 
+## AIOStreams backup and promotion
+
+- `aiostreams validate-backup` and `redact-backup` are offline. Validation
+  reports counts/codes only. Redaction masks complete URLs including hostnames,
+  known and suspicious credentials, proxy details, scripts, expressions,
+  patterns, templates, formatter text, and leak sentinels.
+- The native parser is lossless and forward-compatible: unknown fields and
+  array ordering survive a round trip. A redacted output preserves structure,
+  writes atomically at mode `0600`, and never overwrites an existing target.
+- `aiostreams promote` is read-only. It pulls current account state and probes
+  only the selected standby manifest. Primary and standby endpoints exist only
+  as `env:` / strict-file references in the desired profile and output plan;
+  resolved values are compared and probed in memory but never serialized.
+- Promotion requires exactly one installed descriptor with the configured
+  manifest id, the current endpoint to match the configured primary or selected
+  standby, distinct resolved HTTPS URLs, and a usable identity-matching standby
+  manifest. It produces a normal plan for later manual review and guarded
+  `account apply`; it never invokes `addonCollectionSet` itself.
+
 ## Network
 
-- Every command except `probe collection` and `account` makes no network calls.
+- Every command except `probe collection`, `account`, and `aiostreams promote`
+  makes no network calls.
 - The test suite installs an autouse guard that turns any unexpected socket
   connection or DNS lookup into an immediate failure. Probe and account tests use
   `respx`, injected resolvers, and a loopback fake server, so the real suite runs

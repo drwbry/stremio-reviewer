@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://stremioctl.invalid/schemas/account-snapshot-v1.schema.json",
   "title": "stremioctl account snapshot v1",
-  "description": "A private, atomic capture of the add-on collection returned by an authenticated `account pull`. This is a raw artifact: it holds transport URLs verbatim and is only ever written under a private directory with mode 0600. `collectionFingerprint` is the raw SHA-256 of the canonical `collection` array and is the value a later phase compares against a change plan's `baseCollectionFingerprint`.",
+  "description": "A private, atomic capture of the add-on collection returned by an authenticated `account pull`. This is a raw artifact: it holds transport URLs verbatim and is only ever written under a private directory with mode 0600. `collectionFingerprint` is the raw SHA-256 of the canonical `collection` array and is compared against a change plan's `baseCollectionFingerprint` before apply.",
   "type": "object",
   "additionalProperties": false,
   "required": [

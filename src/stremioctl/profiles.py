@@ -79,6 +79,10 @@ class AddonSpec:
     manage: frozenset[str] = field(default_factory=frozenset)
 
     @property
+    def manages_state(self) -> bool:
+        return "state" in self.manage
+
+    @property
     def manages_position(self) -> bool:
         return "position" in self.manage
 
@@ -88,12 +92,22 @@ class AddonSpec:
 
 
 @dataclass(frozen=True)
+class AIOStreamsPromotion:
+    """Secret-reference-only primary/standby mapping for Phase 6 promotion."""
+
+    manifest_id: str
+    primary_ref: str
+    standbys: dict[str, str]
+
+
+@dataclass(frozen=True)
 class DesiredProfile:
     """A parsed, structurally valid desired profile."""
 
     name: str
     addons: tuple[AddonSpec, ...]
     policy: dict[str, Any]
+    aiostreams_promotion: AIOStreamsPromotion | None
     raw: dict[str, Any]
 
     @property
@@ -125,8 +139,11 @@ def _endpoint_findings(
     findings: list[ProfileFinding] = []
 
     if isinstance(public_url, str):
-        parts = urlsplit(public_url)
-        if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
+        try:
+            parts = urlsplit(public_url)
+        except ValueError:
+            parts = None
+        if parts is None or parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
             findings.append(
                 ProfileFinding(
                     "error",
@@ -237,6 +254,43 @@ def _semantic_findings(doc: dict[str, Any]) -> list[ProfileFinding]:
                     name,
                 )
             )
+
+    promotion = doc.get("aiostreamsPromotion")
+    if isinstance(promotion, dict):
+        refs: list[tuple[str, str]] = []
+        primary = promotion.get("primary")
+        if isinstance(primary, dict) and isinstance(primary.get("secretRef"), str):
+            refs.append(("primary", primary["secretRef"]))
+        standbys = promotion.get("standbys")
+        if isinstance(standbys, dict):
+            for standby_key, raw_endpoint in standbys.items():
+                if isinstance(raw_endpoint, dict) and isinstance(
+                    raw_endpoint.get("secretRef"), str
+                ):
+                    refs.append((f"standby '{standby_key}'", raw_endpoint["secretRef"]))
+
+        for label, ref in refs:
+            problem = _classify_secret_ref(ref)
+            if problem is not None:
+                findings.append(
+                    ProfileFinding(
+                        "error",
+                        "aiostreams_secret_ref",
+                        f"{label}: {problem}",
+                    )
+                )
+        by_ref: dict[str, str] = {}
+        for label, ref in refs:
+            if ref in by_ref:
+                findings.append(
+                    ProfileFinding(
+                        "error",
+                        "aiostreams_duplicate_ref",
+                        f"{label} reuses the same secret reference as {by_ref[ref]}",
+                    )
+                )
+            else:
+                by_ref[ref] = label
     return findings
 
 
@@ -289,7 +343,24 @@ def parse_profile(doc: Any) -> tuple[DesiredProfile, list[ProfileFinding]]:
     if isinstance(doc.get("policy"), dict):
         policy.update(doc["policy"])
     addons = tuple(_build_addon_spec(entry) for entry in doc["addons"])
-    profile = DesiredProfile(name=doc["name"], addons=addons, policy=policy, raw=doc)
+    promotion_raw = doc.get("aiostreamsPromotion")
+    promotion: AIOStreamsPromotion | None = None
+    if isinstance(promotion_raw, dict):
+        promotion = AIOStreamsPromotion(
+            manifest_id=promotion_raw["manifestId"],
+            primary_ref=promotion_raw["primary"]["secretRef"],
+            standbys={
+                key: endpoint["secretRef"]
+                for key, endpoint in promotion_raw["standbys"].items()
+            },
+        )
+    profile = DesiredProfile(
+        name=doc["name"],
+        addons=addons,
+        policy=policy,
+        aiostreams_promotion=promotion,
+        raw=doc,
+    )
     return profile, [f for f in findings if f.severity == "warning"]
 
 
@@ -367,6 +438,7 @@ def build_starter_profile(
 
 __all__ = [
     "AddonSpec",
+    "AIOStreamsPromotion",
     "DesiredProfile",
     "Endpoint",
     "ProfileFinding",

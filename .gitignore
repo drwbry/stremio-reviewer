@@ -4,9 +4,12 @@
 !.env.example
 .stremioctl/private/
 stremio-addons-backup-*.json
+aiostreams-config-*.json
+*.aiostreams-private.json
 *.stremio-private.json
 *.auth-key
 *.json:Zone.Identifier
+profiles/desired.json
 
 # Python build, test, and editor artifacts
 __pycache__/

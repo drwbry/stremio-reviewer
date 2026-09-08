@@ -33,7 +33,7 @@ def _no_sentinels(result: object) -> None:
 def test_version_reports_current_release() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert result.stdout.strip() == "0.2.0"
+    assert result.stdout.strip() == "0.3.0"
 
 
 def test_no_args_shows_help() -> None:
@@ -142,6 +142,15 @@ def test_redact_refuses_to_overwrite_input() -> None:
     )
     assert result.exit_code == 2
     assert VALID_COLLECTION.read_text() == VALID_COLLECTION.read_text()  # unchanged
+
+
+def test_redact_refuses_to_overwrite_any_existing_output(tmp_path: Path) -> None:
+    out = tmp_path / "notes.json"
+    original = '{"keep": true}\n'
+    out.write_text(original)
+    result = runner.invoke(app, ["backup", "redact", str(VALID_COLLECTION), "--out", str(out)])
+    assert result.exit_code == 2
+    assert out.read_text() == original
 
 
 @pytest.mark.parametrize("command", ["inspect", "validate"])

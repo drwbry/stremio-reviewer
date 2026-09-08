@@ -53,6 +53,24 @@ def test_non_http_scheme_is_rejected() -> None:
         AccountConfig(base_url="ftp://api.strem.io")
 
 
+def test_malformed_base_url_is_rejected_cleanly() -> None:
+    with pytest.raises(ValidationError, match=r"http\(s\) URL"):
+        AccountConfig(base_url="https://[invalid")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:pass@api.strem.io",
+        "https://api.strem.io?target=elsewhere",
+        "https://api.strem.io#fragment",
+    ],
+)
+def test_base_url_rejects_ambiguous_or_credential_bearing_components(url: str) -> None:
+    with pytest.raises(ValidationError):
+        AccountConfig(base_url=url)
+
+
 @pytest.mark.parametrize("timeout", [0.5, 121, 999])
 def test_out_of_range_timeout_is_rejected(timeout: float) -> None:
     with pytest.raises(ValidationError):

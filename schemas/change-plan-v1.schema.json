@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://stremioctl.invalid/schemas/change-plan-v1.schema.json",
   "title": "stremioctl change plan v1",
-  "description": "A deterministic, human-reviewable description of the changes needed to make a current add-on collection match a desired profile. It carries secret references and keyed fingerprints, never resolved secret values or complete transport URLs. `planHash` is the SHA-256 of the canonical plan JSON with both `planHash` and `createdAt` removed, so it is stable across re-runs of an unchanged diff.",
+  "description": "A deterministic, human-reviewable description of the changes needed to make a current add-on collection match a desired profile. It carries secret references, keyed fingerprints, optional target-manifest identity bindings, and URLs explicitly declared public in the desired profile, but never resolved secret values or fetched manifest bodies. `planHash` is the SHA-256 of the canonical plan JSON with both `planHash` and `createdAt` removed, so it is stable across re-runs of an unchanged diff.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -38,8 +38,37 @@
           "finalIndex": {"type": "integer", "minimum": 0},
           "reason": {"type": "string"},
           "endpoint": {"type": "string"},
-          "endpointRef": {"type": "string"}
-        }
+          "publicUrl": {"type": "string"},
+          "endpointRef": {"type": "string"},
+          "targetManifestId": {"type": "string", "minLength": 1},
+          "targetManifestFingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {"op": {"const": "replaceEndpoint"}},
+              "required": ["op"]
+            },
+            "then": {
+              "oneOf": [
+                {"required": ["publicUrl"]},
+                {"required": ["endpointRef"]}
+              ]
+            }
+          },
+          {
+            "if": {
+              "anyOf": [
+                {"required": ["targetManifestId"]},
+                {"required": ["targetManifestFingerprint"]}
+              ]
+            },
+            "then": {
+              "properties": {"op": {"const": "replaceEndpoint"}},
+              "required": ["targetManifestId", "targetManifestFingerprint"]
+            }
+          }
+        ]
       }
     }
   }

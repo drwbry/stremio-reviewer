@@ -300,8 +300,12 @@ Supported v1 operations:
 - `preserve`
 
 Plans contain secret references and keyed fingerprints, never resolved secret
-values. Canonicalize plan JSON before computing `planHash`. `planHash` must omit
-its own field from the hash input.
+values. A URL explicitly declared public in the desired profile may be carried
+verbatim so the apply path can honour it. A `replaceEndpoint` may also bind a
+target manifest id and SHA-256 fingerprint; apply must refetch and verify that
+manifest before replacing the stored descriptor manifest and endpoint together.
+Canonicalize plan JSON before computing `planHash`. `planHash` must omit its own
+field from the hash input.
 
 ### 7.4 Audit report v1
 
@@ -393,15 +397,15 @@ Global behavior:
 
 Exit codes:
 
-| Code | Meaning |
-|---:|---|
-| 0 | Success; valid; no unrequested drift |
-| 2 | Invalid input or configuration |
-| 3 | Network or remote service failure |
-| 4 | Missing, invalid, or rejected authentication |
-| 5 | Current state changed since the plan was created |
-| 6 | Apply or verification failed; rollback status is reported |
-| 10 | `diff` completed and found planned changes |
+| Code | Meaning                                                   |
+| ---: | --------------------------------------------------------- |
+|    0 | Success; valid; no unrequested drift                      |
+|    2 | Invalid input or configuration                            |
+|    3 | Network or remote service failure                         |
+|    4 | Missing, invalid, or rejected authentication              |
+|    5 | Current state changed since the plan was created          |
+|    6 | Apply or verification failed; rollback status is reported |
+|   10 | `diff` completed and found planned changes                |
 
 Never use exit code `1` for an expected validation or diff condition. Reserve it
 for uncaught defects until they are assigned a stable code.
@@ -806,4 +810,3 @@ Implement Phase 1 from SPEC.md. Stop after its acceptance gate.
 
 Continue one phase at a time. Phases 4-6 require extra scrutiny because they
 introduce private state, authenticated access, and mutation behavior.
-

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "aiostreams-failover-example",
+  "addons": [],
+  "policy": {
+    "requireHttps": true,
+    "manifestTimeoutSeconds": 8,
+    "maxConcurrentProbes": 2,
+    "allowPrivateNetwork": false,
+    "preserveUnmanagedAddons": true
+  },
+  "aiostreamsPromotion": {
+    "manifestId": "replace-with-observed-primary-manifest-id",
+    "primary": {
+      "secretRef": "env:STREMIOCTL_AIOSTREAMS_PRIMARY_URL"
+    },
+    "standbys": {
+      "secondary": {
+        "secretRef": "env:STREMIOCTL_AIOSTREAMS_SECONDARY_URL"
+      }
+    }
+  }
+}

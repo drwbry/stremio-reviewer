@@ -41,7 +41,7 @@ unusable input is an **error**.
 | `insecure_transport`         | warning  | `transportUrl` uses `http` instead of `https`.     |
 | `credential_in_url`          | warning  | `transportUrl` carries a query string.             |
 | `userinfo_in_url`            | warning  | `transportUrl` carries HTTP user-info.             |
-| `unexpected_descriptor_field`| warning  | A top-level key outside the known four.            |
+| `unexpected_descriptor_field` | warning  | A top-level key outside the known four.            |
 | `flags_type`                 | warning  | `flags` is present but not an object.              |
 
 ## Redacted endpoint labels
@@ -115,16 +115,17 @@ Each `addons` entry:
 | --------- | -------- | -------------------------------------------------------------- |
 | `key`     | yes      | Unique local stable name for this entry.                       |
 | `match`   | yes      | `{ "manifestId": "...", "transportFingerprint"?: "<12 hex>" }` |
-| `state`   | yes      | `present` or `absent`. `absent` plans a removal.               |
-| `position`| no       | Target index in the collection *after* removals.               |
-| `endpoint`| no       | Exactly one of `publicUrl` or `secretRef` (see below).         |
+| `state`   | yes      | `present` or `absent`; enforced only when listed in `manage`.  |
+| `position` | no       | Target index in the collection *after* removals.              |
+| `endpoint` | no       | Exactly one of `publicUrl` or `secretRef` (see below).         |
 | `manage`  | no       | Subset of `state`, `position`, `endpoint`. Only listed         |
 |           |          | properties are enforced; the rest are advisory.               |
 
 `policy` (all optional, defaults shown): `requireHttps` (`true`),
 `manifestTimeoutSeconds` (`8`, 1–30), `maxConcurrentProbes` (`4`, 1–10),
 `allowPrivateNetwork` (`false`), `preserveUnmanagedAddons` (`true`). The
-network-shaped policy values are recorded now and consumed by Phase 3.
+network-shaped policy values are reserved for orchestrated workflows; the
+standalone Phase 3 probe command currently uses its documented defaults.
 
 Semantic rules enforced by `profile validate` and `profile diff`:
 
@@ -188,15 +189,19 @@ Operation types and their fields:
 | `op`             | Meaning                                             | Fields                                                    |
 | ---------------- | -------------------------------------------------- | ------------------------------------------------------- |
 | `remove`         | Descriptor deleted from the collection.            | `manifestId`, `fromIndex`, `key?`, `reason`             |
-| `add`            | New descriptor introduced by the profile.          | `key`, `manifestId`, `finalIndex`, `endpoint?`/`endpointRef?` |
+| `add`            | New descriptor introduced by the profile.          | `key`, `manifestId`, `finalIndex`, `endpoint?`, `publicUrl?`, or `endpointRef?` |
 | `move`           | Surviving descriptor changes index.                | `manifestId`, `fromIndex`, `finalIndex`, `key?`, `reason` (`managed` or `unmanaged-shift`) |
-| `replaceEndpoint`| Managed endpoint differs, or cannot be confirmed.  | `key`, `manifestId`, `finalIndex`, `endpoint?`/`endpointRef?`, `reason?` (`offline-unverifiable`) |
+| `replaceEndpoint` | Managed endpoint differs, or cannot be confirmed. | `key`, `manifestId`, `finalIndex`, `endpoint?`, `publicUrl?`, or `endpointRef?`; `reason?`; optional paired `targetManifestId` + `targetManifestFingerprint` |
 | `preserve`       | Existing descriptor retained, at `finalIndex`.     | `manifestId`, `finalIndex`, `key?`, `endpoint?`          |
 
 `fromIndex` is the descriptor's index in the input collection; `finalIndex` is
 its index in the target. `endpoint` is a redacted endpoint label; `endpointRef`
 is a secret reference copied verbatim (for example `env:STREMIOCTL_X_URL`). A
-plan never contains a resolved URL or secret value.
+plan never contains a resolved secret value. If the desired profile explicitly
+declares an endpoint public, the plan also carries it in `publicUrl` so apply can
+honour it; human output continues to use `endpoint`. Phase 6 promotion adds
+`targetManifestId` and `targetManifestFingerprint` as a pair. They bind the
+replacement to a manifest without storing its response body.
 
 Every surviving existing descriptor gets exactly one `preserve` entry, so
 `preserve` plus `add` is a complete, contiguous `0..n-1` map of the target
@@ -206,11 +211,12 @@ collection that `account apply` builds from directly. `move` and
 
 `account apply` matches each `preserve` entry back to a current descriptor by
 `manifestId` and, when the descriptor has a transport URL, the keyed fingerprint
-in the entry's `endpoint` label. It refuses two operation kinds it cannot honour
-in v1: `add` (no manifest is carried) and `replaceEndpoint` whose only endpoint
-data is a redacted `endpoint` label (the real URL is unrecoverable). A
-`replaceEndpoint` with an `endpointRef` is resolved at apply time; the resolved
-value must be an `https` URL.
+in the entry's `endpoint` label. It refuses `add` because no manifest is carried.
+A `replaceEndpoint` with an `endpointRef` is resolved at apply time; one with a
+`publicUrl` uses the reviewed, declared-public URL. Every newly written endpoint
+must use `https`. When the target-manifest binding is present, apply refetches
+the endpoint after the account drift guard, requires the exact id and canonical
+SHA-256 fingerprint, and replaces the stored manifest and endpoint together.
 
 Operations are ordered `remove`, `add`, `move`, `replaceEndpoint`, `preserve`,
 and within a group by `manifestId` then `key`. This order is for human review;
@@ -260,7 +266,7 @@ Statuses (SPEC §11):
 | ------------------- | ----------------------------------------------------------- |
 | `healthy`           | `https`, 2xx, valid manifest, id matches, no warnings.       |
 | `warning`           | Reached and usable, but something is off (for example a non-JSON content type). |
-| `insecure_transport`| Would be healthy, but the transport URL is `http`.           |
+| `insecure_transport` | Would be healthy, but the transport URL is `http`.          |
 | `unreachable`       | DNS failure, connection error, timeout, non-2xx after retries, a cross-origin redirect, or more than one redirect. |
 | `invalid_manifest`  | 2xx, but the body is not JSON, not an object, has no string `id`, or exceeds 2 MiB. |
 | `identity_mismatch` | Valid manifest whose `id` differs from the descriptor.      |
@@ -319,15 +325,15 @@ unrelated file. `account plan` does not write a snapshot — the plan's
 artifact automatically, before any write, to
 `$STREMIOCTL_DATA_DIR/snapshots/`:
 
-- `account apply` writes `pre-apply-<timestamp>-<fp12>.json` — the state it is
+- `account apply` writes `pre-apply-<timestamp>-<fp12>-<random>.json` — the state it is
   about to change, and the state its own rollback restores to.
-- `account rollback` writes `pre-rollback-<timestamp>-<fp12>.json` — the state
+- `account rollback` writes `pre-rollback-<timestamp>-<fp12>-<random>.json` — the state
   before the deliberate restore, so a mistaken rollback is itself recoverable.
 
 `<timestamp>` is `pulledAt` with `-` and `:` removed; `<fp12>` is the first 12
-hex of `collectionFingerprint`. Both files are mode `0600` in a `0700`
-directory. If the snapshot cannot be persisted, no push is made and the command
-exits `6`.
+hex of `collectionFingerprint`; `<random>` prevents same-second collisions.
+Both files are mode `0600` in a `0700` directory. If the snapshot cannot be
+persisted, no push is made and the command exits `6`.
 
 ## `account apply` and `account rollback` outcomes
 
@@ -336,7 +342,7 @@ exits `6`.
 | Exit | When |
 | ---: | ---- |
 | `0` | The plan was already converged, or the target already matched the account, or the push landed and the exact fingerprint verified. No rollback needed. |
-| `2` | Wrong `--confirm` value, a corrupt or schema-invalid plan, an `add` or public-URL `replaceEndpoint` the plan cannot apply, a protected-add-on removal, or an unresolvable / non-`https` endpoint reference. No write. |
+| `2` | Wrong `--confirm` value, a corrupt or schema-invalid plan, an unsupported `add`, a protected-add-on removal, or an invalid / non-`https` endpoint. No write. |
 | `3` | The initial pull failed (no write attempted). |
 | `4` | The auth key was missing or rejected before any write. |
 | `5` | The current collection no longer matches the plan's `baseCollectionFingerprint`. No write. |
@@ -353,3 +359,53 @@ but not byte-identical, the report says so — "semantically equivalent but not
 byte-identical" — and the single rollback still runs. `BACKLOG.md` tracks this:
 the first real apply may show server-side normalization and justify a
 semantic-equivalence acceptance path.
+
+## AIOStreams native backup adapter v1
+
+`aiostreams validate-backup` and `aiostreams redact-backup` consume the native
+AIOStreams `UserData` object exported from **Save & Install → Backups**. They do
+not accept Stremio collection arrays, AIOStreams template artifacts, or server
+dashboard-settings exports. The structural contract is
+[`schemas/aiostreams-backup-v1.schema.json`](../schemas/aiostreams-backup-v1.schema.json).
+
+The adapter requires the `formatter`, `sortCriteria.global`, and `presets`
+anchors observed in AIOStreams 2.34.0, but permits and losslessly retains every
+unknown field. The native format has no reliable producer-version envelope, so
+record the AIOStreams version beside the export.
+
+Validation reports only value-free codes and counts. Populated known/suspicious
+credential fields are errors; complete URLs, arbitrary scripts/expressions,
+and import-only `uuid`/`trusted` fields are warnings. Redaction can safely accept
+a structurally valid credential-bearing backup: it masks those credentials,
+all URL hosts/paths/queries, proxy details, and risky free text while preserving
+object keys, array order, and JSON scalar types. It refuses every existing
+output target and writes mode `0600`.
+The redacted artifact is for review/sharing and is not intended for import back
+into AIOStreams; use the untouched private native backup for UI import.
+
+An optional top-level desired-profile object drives promotion:
+
+```json
+{
+  "aiostreamsPromotion": {
+    "manifestId": "observed.primary.manifest.id",
+    "primary": {"secretRef": "file:/private/primary.url"},
+    "standbys": {
+      "secondary": {"secretRef": "file:/private/secondary.url"}
+    }
+  }
+}
+```
+
+References must be distinct `env:` or absolute `file:` references. `manifestId`
+is the observed primary identity; a separately imported standby may legitimately
+have a different UUID-derived identity. `promote` resolves the references
+locally, requires distinct HTTPS values, pulls fresh Stremio state, probes only
+the standby manifest using profile network policy, and identifies exactly one
+installed primary or selected standby descriptor. A planned `replaceEndpoint`
+contains only the unresolved standby reference plus the discovered target
+manifest id and its SHA-256 fingerprint. Apply refetches that manifest after the
+account drift guard, rejects a changed id/fingerprint, and replaces the stored
+manifest and endpoint together. Exit `10` means a promotion is planned; `0` means the standby is
+already installed; `2` means local/profile state is unsafe; `3` means the
+standby probe or account read failed. The command never writes the account.

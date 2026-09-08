@@ -13,6 +13,7 @@ body, a header value, or an auth key.
 
 from __future__ import annotations
 
+import copy
 import ipaddress
 import json
 import random
@@ -123,6 +124,10 @@ class ProbeEntry:
     redirects: int = 0
     warnings: list[str] = field(default_factory=list)
     detail: str | None = None
+    # Kept out of ``to_json`` so audit artifacts never acquire response bodies.
+    # The guarded promotion path uses it internally to bind a reviewed endpoint
+    # to the exact manifest that apply must fetch again before writing.
+    document: dict[str, Any] | None = field(default=None, repr=False)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -365,6 +370,10 @@ def _run_probe(
         if "json" not in content_type.lower():
             entry.warnings.append("response content-type is not JSON")
         status, warnings, detail = _classify_manifest(body, entry.manifest_id)
+        if status == STATUS_HEALTHY:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict):  # guaranteed by _classify_manifest
+                entry.document = parsed
         entry.warnings.extend(warnings)
         entry.detail = detail
         entry.status = _finalize_status(status, entry)
@@ -477,6 +486,34 @@ def probe_collection(
     }
 
 
+def probe_manifest_url(
+    url: str,
+    expected_id: str | None,
+    key: bytes,
+    cfg: ProbeConfig | None = None,
+    *,
+    resolver: Resolver | None = None,
+    sleep: SleepFn = time.sleep,
+    jitter: JitterFn | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Probe one manifest URL and return its safe report row plus private document.
+
+    The raw document is never included in the report row. Callers that retain it
+    are responsible for keeping it out of user-facing output and durable audit
+    artifacts.
+    """
+
+    config = cfg or ProbeConfig()
+    resolve = resolver or _default_resolver
+    jitter_fn = jitter or (lambda: random.uniform(0.0, 0.25))
+    descriptor: dict[str, Any] = {
+        "manifest": {} if expected_id is None else {"id": expected_id},
+        "transportUrl": url,
+    }
+    entry = _probe_one(0, descriptor, key, config, resolve, sleep, jitter_fn)
+    return entry.to_json(), copy.deepcopy(entry.document)
+
+
 def audit_exit_code(report: dict[str, Any]) -> int:
     """Return ``0`` when every entry is healthy or a plain warning, else ``3``."""
 
@@ -522,6 +559,7 @@ __all__ = [
     "ProbeEntry",
     "Resolver",
     "audit_exit_code",
+    "probe_manifest_url",
     "probe_collection",
     "read_capped_body",
     "render_audit_human",

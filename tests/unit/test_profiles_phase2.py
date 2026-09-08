@@ -119,6 +119,11 @@ def test_public_url_must_be_http_s() -> None:
     assert "endpoint_public_url" in _codes(doc, "error")
 
 
+def test_public_url_with_invalid_ipv6_is_reported_not_crashed() -> None:
+    doc = _profile(endpoint={"publicUrl": "https://[invalid/manifest.json"}, manage=["endpoint"])
+    assert "endpoint_public_url" in _codes(doc, "error")
+
+
 def test_position_without_manage_is_a_warning_not_an_error() -> None:
     doc = _profile(position=3, manage=["state"])
     findings = check_profile(doc)

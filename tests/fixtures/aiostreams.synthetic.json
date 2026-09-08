@@ -1,0 +1,68 @@
+{
+  "variants": [
+    {
+      "id": "example-variant",
+      "name": "Example variant",
+      "script": "return context;"
+    }
+  ],
+  "healthChecks": [
+    {
+      "id": "example-health",
+      "url": "https://health.example.invalid/status"
+    }
+  ],
+  "addonName": "Synthetic AIOStreams",
+  "addonLogo": "https://assets.example.invalid/logo.png",
+  "appliedTemplates": [
+    {
+      "id": "example-template",
+      "version": "1.0.0",
+      "url": "https://templates.example.invalid/config.json"
+    }
+  ],
+  "syncedExcludedRegexUrls": [
+    "https://rules.example.invalid/excluded.txt"
+  ],
+  "excludedStreamExpressions": [
+    {
+      "expression": "stream.type == 'p2p'",
+      "enabled": true
+    }
+  ],
+  "sortCriteria": {
+    "global": [
+      {
+        "key": "cached",
+        "direction": "desc"
+      }
+    ]
+  },
+  "formatter": {
+    "id": "gdrive"
+  },
+  "proxy": {
+    "enabled": false
+  },
+  "services": [
+    {
+      "id": "realdebrid",
+      "enabled": false,
+      "credentials": {}
+    }
+  ],
+  "presets": [
+    {
+      "id": "example-preset",
+      "type": "example",
+      "options": {
+        "api": {
+          "url": "https://preset.example.invalid/api"
+        }
+      }
+    }
+  ],
+  "futureField": {
+    "nested": [true, 3, null, "preserved"]
+  }
+}

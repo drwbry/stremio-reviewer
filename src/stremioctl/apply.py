@@ -10,13 +10,14 @@ opened. A newly written endpoint (a ``replaceEndpoint`` resolved from a secret
 reference) must be ``https``; a plain ``http`` target is refused because installing
 an insecure endpoint is an active choice, not an inherited one.
 
-Two plan operations cannot be applied in v1 and are refused with an actionable
+One plan operation cannot be applied in v1 and is refused with an actionable
 message:
 
 * ``add`` - the plan carries no manifest for a brand-new add-on.
-* ``replaceEndpoint`` for a declared-public URL - the plan stores only a redacted
-  label, so the real URL cannot be recovered. ``replaceEndpoint`` via a secret
-  reference (``endpointRef``) *is* supported.
+
+``replaceEndpoint`` supports either a delayed secret reference or a URL that was
+explicitly declared public in the desired profile. Newly written endpoints must
+use HTTPS.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import copy
 import json
 import os
 import re
+import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,7 +42,13 @@ from stremioctl.account import (
     fetch_addon_collection,
     push_addon_collection,
 )
-from stremioctl.errors import ApplyError, DriftError, StremioctlError, ValidationError
+from stremioctl.errors import (
+    ApplyError,
+    DriftError,
+    NetworkError,
+    StremioctlError,
+    ValidationError,
+)
 from stremioctl.fingerprints import collection_fingerprint
 from stremioctl.io import (
     atomic_write_text,
@@ -52,6 +60,7 @@ from stremioctl.io import (
 from stremioctl.models import parse_collection
 from stremioctl.plans import compute_plan_hash
 from stremioctl.privacy import display_fingerprint
+from stremioctl.probing import ProbeConfig, probe_manifest_url
 from stremioctl.schemas import iter_schema_errors
 
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -61,6 +70,7 @@ ROLLBACK_NOT_ATTEMPTED = "not_attempted"
 ROLLBACK_SUCCEEDED = "succeeded"
 ROLLBACK_FAILED = "failed"
 ROLLBACK_UNKNOWN = "unknown"
+TargetManifestResolver = Callable[[str, str, str, bytes], dict[str, Any]]
 
 
 @dataclass
@@ -105,7 +115,12 @@ def resolve_endpoint_ref(ref: str) -> str:
     else:
         raise ValidationError("a secret reference must start with 'env:' or 'file:'")
 
-    parts = urlsplit(resolved)
+    try:
+        parts = urlsplit(resolved)
+    except ValueError as exc:
+        raise ValidationError(
+            "a resolved endpoint reference is not a valid http(s) URL"
+        ) from exc
     scheme = parts.scheme.lower()
     if scheme not in {"http", "https"} or not parts.hostname:
         raise ValidationError("a resolved endpoint reference is not a valid http(s) URL")
@@ -115,6 +130,44 @@ def resolve_endpoint_ref(ref: str) -> str:
             "use https"
         )
     return resolved
+
+
+def _validated_public_endpoint(value: Any) -> str:
+    """Validate a declared-public endpoint carried verbatim in a reviewed plan."""
+
+    if not isinstance(value, str):
+        raise ValidationError("a public endpoint in the plan must be a string")
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        parts = None
+    if parts is None or parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
+        raise ValidationError("a public endpoint in the plan is not a valid http(s) URL")
+    if parts.scheme.lower() != "https":
+        raise ValidationError("a newly written public endpoint must use https")
+    return value
+
+
+def resolve_target_manifest(
+    endpoint: str,
+    expected_id: str,
+    expected_fingerprint: str,
+    key: bytes,
+) -> dict[str, Any]:
+    """Fetch and verify the exact target manifest bound into a reviewed plan."""
+
+    entry, manifest = probe_manifest_url(endpoint, expected_id, key, ProbeConfig())
+    if entry["status"] not in {"healthy", "warning"} or manifest is None:
+        raise NetworkError(
+            "the replacement endpoint failed its apply-time manifest check: "
+            + str(entry["status"])
+        )
+    if collection_fingerprint(manifest) != expected_fingerprint:
+        raise DriftError(
+            "the replacement endpoint's manifest changed since planning; create and review a "
+            "new plan"
+        )
+    return manifest
 
 
 def _structure(descriptors: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -198,6 +251,7 @@ def construct_target(
     key: bytes,
     *,
     resolver: Callable[[str], str] = resolve_endpoint_ref,
+    target_manifest_resolver: TargetManifestResolver = resolve_target_manifest,
 ) -> list[dict[str, Any]]:
     """Build the complete ordered target collection locally from *plan*.
 
@@ -216,12 +270,21 @@ def construct_target(
                 "manifest for a new add-on. Install it with a Stremio client, then re-pull "
                 "and re-plan."
             )
-        if name == "replaceEndpoint" and "endpointRef" not in op:
-            raise ValidationError(
-                "this plan replaces an endpoint that was declared as a public URL. v1 apply "
-                "cannot resolve it because the plan stores only a redacted label. Set the "
-                "endpoint with a Stremio client, or manage it through a secret reference."
-            )
+        if name == "replaceEndpoint":
+            endpoint_sources = {"endpointRef", "publicUrl"} & op.keys()
+            if len(endpoint_sources) != 1:
+                raise ValidationError(
+                    "this plan replaces an endpoint but does not carry exactly one endpoint "
+                    "reference or declared-public URL; create a new plan"
+                )
+            target_fields = {
+                "targetManifestId",
+                "targetManifestFingerprint",
+            } & op.keys()
+            if len(target_fields) not in {0, 2}:
+                raise ValidationError(
+                    "this plan's replacement manifest binding is incomplete; create a new plan"
+                )
 
     for op in ops:
         if op["op"] != "remove":
@@ -277,7 +340,18 @@ def construct_target(
                 f"a plan 'replaceEndpoint' for '{op.get('manifestId')}' lands on a slot holding "
                 f"'{slot_id}'; the plan is inconsistent - create a new one"
             )
-        slots[final]["transportUrl"] = resolver(op["endpointRef"])
+        if "endpointRef" in op:
+            target_url = resolver(op["endpointRef"])
+        else:
+            target_url = _validated_public_endpoint(op.get("publicUrl"))
+        slots[final]["transportUrl"] = target_url
+        if "targetManifestId" in op:
+            slots[final]["manifest"] = target_manifest_resolver(
+                target_url,
+                op["targetManifestId"],
+                op["targetManifestFingerprint"],
+                key,
+            )
 
     size = len(slots)
     if sorted(slots) != list(range(size)):
@@ -290,7 +364,9 @@ def construct_target(
 
 def _snapshot_name(prefix: str, now: str, fingerprint: str) -> str:
     stamp = now.replace("-", "").replace(":", "")
-    return f"{prefix}-{stamp}-{fingerprint[:12]}.json"
+    # ``now`` is deliberately second-precision in the snapshot contract. A
+    # random suffix keeps two same-second operations individually durable.
+    return f"{prefix}-{stamp}-{fingerprint[:12]}-{secrets.token_hex(4)}.json"
 
 
 def _snapshot_text(snapshot: dict[str, Any]) -> str:
@@ -417,11 +493,15 @@ def apply_plan(
             lines=["the plan's target already matches the account; no write needed"],
         )
 
+    removes_everything = bool(pulled.addons) and not target
+
     snapshot_path = _write_snapshot(pulled, now, "pre-apply")
     lines = [
         f"wrote pre-apply snapshot to {snapshot_path} "
         f"({len(pulled.addons)} add-ons, fingerprint {pulled.fingerprint[:12]})"
     ]
+    if removes_everything:
+        lines.append(f"warning: this apply will remove all {len(pulled.addons)} add-ons")
 
     push_error: str | None = None
     try:
@@ -568,5 +648,6 @@ __all__ = [
     "construct_target",
     "ensure_snapshots_dir",
     "resolve_endpoint_ref",
+    "resolve_target_manifest",
     "rollback_snapshot",
 ]

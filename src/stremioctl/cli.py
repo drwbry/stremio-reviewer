@@ -1,9 +1,8 @@
 """The stremioctl command-line entry point.
 
-Phase 1 exposes offline ``backup`` sub-commands; Phase 2 adds offline ``profile``
-sub-commands; Phase 3 adds the networked ``probe`` sub-command. Every command
-body runs inside a single error boundary that prints sanitized messages to
-stderr and maps typed errors to their stable exit codes.
+The command tree covers the Phase 1-5 offline, probe, and guarded account
+workflows. Every command body runs inside a single error boundary that prints
+sanitized messages to stderr and maps typed errors to stable exit codes.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ from stremioctl.account import (
     fetch_addon_collection,
     resolve_auth_key,
 )
+from stremioctl.aiostreams import build_promotion_plan, check_backup, redact_backup
 from stremioctl.apply import apply_plan, ensure_snapshots_dir, rollback_snapshot
 from stremioctl.diff import build_change_plan, render_plan_human
 from stremioctl.errors import StremioctlError, ValidationError
@@ -75,9 +75,15 @@ app.add_typer(probe_app, name="probe")
 account_app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
-    help="Authenticated, read-only account pull and planning. No writes in v1.",
+    help="Authenticated account pull, planning, guarded apply, and rollback.",
 )
 app.add_typer(account_app, name="account")
+aiostreams_app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="Validate/redact native AIOStreams backups and plan a standby promotion.",
+)
+app.add_typer(aiostreams_app, name="aiostreams")
 
 
 def _stdout_console() -> Console:
@@ -184,6 +190,13 @@ def _guard_output_path(path: Path, reserved: tuple[Path, ...], *, expect: str) -
             raise ValidationError("Refusing to overwrite an input file; choose a different path")
     if not path.exists():
         return
+    if expect == "redacted":
+        # Redacted collections intentionally retain the upstream array shape and
+        # have no reliable artifact marker. Refuse every existing target rather
+        # than guessing and potentially clobbering an unrelated JSON file.
+        raise ValidationError(
+            f"Refusing to overwrite {path.name}: choose a new path or remove the old redacted copy"
+        )
     existing = load_json_document(path)  # bounded read; non-JSON -> ValidationError
     recognized = (
         isinstance(existing, dict)
@@ -271,10 +284,7 @@ def backup_redact(
 
     def action() -> int:
         key = load_or_create_redaction_key()
-        if out.resolve() == path.resolve():
-            raise ValidationError(
-                "Refusing to overwrite the input file; choose a different --out path"
-            )
+        _guard_output_path(out, (path,), expect="redacted")
         payload = load_json_document(path)
         # redact is the most permissive of the three commands: anyone with a
         # slightly malformed export still needs a safe copy to share. Only a
@@ -294,6 +304,56 @@ def backup_redact(
         _stdout_console().print(
             f"Wrote redacted collection to {out} "
             f"({len(payload)} descriptors, {endpoints} transport URLs redacted)."
+        )
+        return 0
+
+    _run(action)
+
+
+@aiostreams_app.command("validate-backup")
+def aiostreams_validate_backup(
+    path: Annotated[Path, typer.Argument(help="Native AIOStreams configuration export.")],
+) -> None:
+    """Validate a native UserData backup without printing any stored value."""
+
+    def action() -> int:
+        payload = load_json_document(path)
+        findings = check_backup(payload)
+        console = _stdout_console()
+        if not findings:
+            console.print("findings: none")
+        else:
+            console.print(f"findings: {len(findings)}")
+            for finding in findings:
+                console.print(f"  {finding.render()}")
+        errors = sum(1 for finding in findings if finding.severity == "error")
+        warnings = sum(1 for finding in findings if finding.severity == "warning")
+        if errors:
+            console.print(f"INVALID ({errors} errors, {warnings} warnings)")
+            return 2
+        console.print(f"VALID ({warnings} warnings)")
+        return 0
+
+    _run(action)
+
+
+@aiostreams_app.command("redact-backup")
+def aiostreams_redact_backup(
+    path: Annotated[Path, typer.Argument(help="Native AIOStreams configuration export.")],
+    out: Annotated[Path, typer.Option("--out", help="New path for the redacted copy.")],
+) -> None:
+    """Write a shape-preserving copy with credentials, URLs, and risky free text masked."""
+
+    def action() -> int:
+        _guard_output_path(out, (path,), expect="redacted")
+        payload = load_json_document(path)
+        key = load_or_create_redaction_key()
+        redacted, changed = redact_backup(payload, key)
+        text = json.dumps(redacted, ensure_ascii=False, indent=2) + "\n"
+        assert_no_sentinels(text)
+        atomic_write_text(out, text, mode=0o600)
+        _stdout_console().print(
+            f"Wrote redacted AIOStreams backup to {out} ({changed} values masked)."
         )
         return 0
 
@@ -565,6 +625,56 @@ def account_apply(
     _run(action)
 
 
+@aiostreams_app.command("promote")
+def aiostreams_promote(
+    profile_path: Annotated[
+        Path, typer.Option("--profile", help="Desired profile with aiostreamsPromotion.")
+    ],
+    standby: Annotated[str, typer.Option("--standby", help="Configured standby key.")],
+    out_plan: Annotated[
+        Path, typer.Option("--out-plan", help="New path for the reviewed change plan.")
+    ],
+    auth_key_file: Annotated[
+        Path | None, typer.Option("--auth-key-file", help=_AUTH_KEY_FILE_HELP)
+    ] = None,
+    base_url: Annotated[
+        str, typer.Option("--base-url", help=_BASE_URL_HELP)
+    ] = DEFAULT_BASE_URL,
+) -> None:
+    """Probe a separately provisioned standby and create a normal account plan."""
+
+    def action() -> int:
+        profile_doc = load_json_document(profile_path)
+        profile, _ = parse_profile(profile_doc)
+        promotion = profile.aiostreams_promotion
+        if promotion is None:
+            raise ValidationError("desired profile has no aiostreamsPromotion configuration")
+        if standby not in promotion.standbys:
+            choices = ", ".join(sorted(promotion.standbys))
+            raise ValidationError(f"unknown AIOStreams standby key; configured keys: {choices}")
+        _guard_output_path(out_plan, (profile_path,), expect="plan")
+        cfg = AccountConfig(base_url=base_url)
+        key = load_or_create_redaction_key()
+        auth_key = resolve_auth_key(auth_key_file=auth_key_file)
+        try:
+            pulled = fetch_addon_collection(auth_key, cfg)
+            plan = build_promotion_plan(
+                current=pulled.addons,
+                profile=profile,
+                standby_key=standby,
+                key=key,
+                created_at=_utc_now_z(),
+            )
+            text = _assert_plan_contract(plan) + "\n"
+            atomic_write_text(out_plan, text, mode=0o600)
+        except StremioctlError as exc:
+            raise type(exc)(sanitize_text(exc.message, secrets_to_hide=(auth_key,))) from None
+        render_plan_human(plan, _stdout_console())
+        return 10 if plan["operations"] else 0
+
+    _run(action)
+
+
 @account_app.command("rollback")
 def account_rollback(
     snapshot_path: Annotated[
@@ -615,4 +725,12 @@ def main() -> None:
     app()
 
 
-__all__ = ["account_app", "app", "backup_app", "main", "probe_app", "profile_app"]
+__all__ = [
+    "account_app",
+    "aiostreams_app",
+    "app",
+    "backup_app",
+    "main",
+    "probe_app",
+    "profile_app",
+]

@@ -23,11 +23,13 @@ _HASH_EXCLUDED = frozenset({"planHash", "createdAt"})
 
 
 def _op_sort_key(operation: dict[str, Any]) -> tuple[int, str, str, int]:
+    raw_index = operation.get("finalIndex", operation.get("fromIndex", -1))
+    index = raw_index if isinstance(raw_index, int) else -1
     return (
         _OP_RANK.get(str(operation.get("op")), 99),
         str(operation.get("manifestId", "")),
         str(operation.get("key", "")),
-        int(operation.get("finalIndex", operation.get("fromIndex", -1))),
+        index,
     )
 
 

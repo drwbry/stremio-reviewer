@@ -1,7 +1,7 @@
-"""Authenticated, read-only account access.
+"""Authenticated Stremio account collection access.
 
-Phase 4 implements a single upstream call: ``addonCollectionGet``. There is no
-write path here. The auth key is read only inside these functions, only from the
+The read path uses ``addonCollectionGet`` and the guarded Phase 5 write path uses
+``addonCollectionSet``. The auth key is read only inside these functions, only from the
 ``STREMIO_AUTH_KEY`` environment variable or a strict-permission file, and is
 never placed in a URL, a header, a log line, or an exception message.
 
@@ -36,16 +36,23 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 @dataclass(frozen=True)
 class AccountConfig:
-    """Where and how to reach the Stremio API for a read."""
+    """Where and how to reach the Stremio collection API."""
 
     base_url: str = DEFAULT_BASE_URL
     timeout: float = 15.0
 
     def __post_init__(self) -> None:
-        parts = urlsplit(self.base_url)
+        try:
+            parts = urlsplit(self.base_url)
+        except ValueError as exc:
+            raise ValidationError("account base URL must be an http(s) URL") from exc
         scheme = parts.scheme.lower()
         if scheme not in {"http", "https"} or not parts.hostname:
             raise ValidationError("account base URL must be an http(s) URL")
+        if parts.username or parts.password or parts.query or parts.fragment:
+            raise ValidationError(
+                "account base URL must not contain user-info, a query string, or a fragment"
+            )
         if scheme == "http":
             loopback = parts.hostname in _LOOPBACK_HOSTS
             allowed = os.environ.get(INSECURE_LOOPBACK_ENV) == "1"

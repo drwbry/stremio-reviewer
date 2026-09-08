@@ -2,7 +2,7 @@
 
 This module is pure and makes no network calls. It never resolves a secret
 reference; an endpoint given only as ``secretRef`` is opaque here, and the plan
-records the reference verbatim for a later phase to resolve.
+records the reference verbatim for the apply path to resolve.
 
 Matching order follows SPEC section 10:
 
@@ -66,6 +66,10 @@ def _attach_endpoint(op: dict[str, Any], endpoint: Endpoint | None, key: bytes) 
         return
     if endpoint.public_url is not None:
         op["endpoint"] = redact_url(endpoint.public_url, key)
+        # This URL was explicitly declared public in the desired profile. Carry
+        # it so apply can honour the reviewed operation; ``endpoint`` remains
+        # the redacted human-facing label.
+        op["publicUrl"] = endpoint.public_url
     elif endpoint.secret_ref is not None:
         op["endpointRef"] = endpoint.secret_ref
 
@@ -177,7 +181,7 @@ def build_change_plan(
     removed: set[int] = set()
 
     for spec in profile.addons:
-        if spec.state != "absent":
+        if spec.state != "absent" or not spec.manages_state:
             continue
         index = matched[spec.key]
         if index is None:
@@ -218,6 +222,10 @@ def build_change_plan(
         if i in removed:
             continue
         owner = specs_by_key.get(claimed_by.get(i, ""))
+        if owner is not None and owner.state == "absent":
+            # An absent entry whose state is not managed is advisory. Its other
+            # properties are ignored, matching the profile validation warning.
+            owner = None
         anchor = (
             owner.position
             if owner is not None and owner.manages_position and owner.position is not None
@@ -226,7 +234,11 @@ def build_change_plan(
         survivors.append(_Item(origin_index=i, manifest_id=mid, spec=owner, anchor_pos=anchor))
 
     for spec in profile.addons:
-        if spec.state != "present" or matched[spec.key] is not None:
+        if (
+            spec.state != "present"
+            or not spec.manages_state
+            or matched[spec.key] is not None
+        ):
             continue
         if spec.endpoint is None:
             raise ValidationError(
@@ -364,7 +376,15 @@ def render_plan_human(plan: dict[str, Any], console: Console) -> None:
                 endpoint = f" endpoint={op['endpoint']}"
             elif "endpointRef" in op:
                 endpoint = f" endpointRef={op['endpointRef']}"
-            console.print(f"  {op['op']}: {target}{src}{where}{reason}{endpoint}")
+            target_manifest = ""
+            if "targetManifestId" in op:
+                fingerprint = str(op["targetManifestFingerprint"])
+                target_manifest = (
+                    f" targetManifest={op['targetManifestId']}#{fingerprint[:12]}"
+                )
+            console.print(
+                f"  {op['op']}: {target}{src}{where}{reason}{endpoint}{target_manifest}"
+            )
 
     if plan["warnings"]:
         console.print(f"warnings: {len(plan['warnings'])}")

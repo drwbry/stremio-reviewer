@@ -424,6 +424,41 @@ def test_absent_spec_matching_nothing_is_a_no_op() -> None:
     assert _plan(current, doc)["operations"] == []
 
 
+def test_absent_state_is_advisory_when_state_is_not_managed() -> None:
+    current = _collection(["a", "b"])
+    doc = {
+        "schemaVersion": 1,
+        "name": "t",
+        "addons": [
+            {
+                "key": "keep-a",
+                "match": {"manifestId": "a"},
+                "state": "absent",
+                "manage": [],
+            }
+        ],
+    }
+    assert _plan(current, doc)["operations"] == []
+
+
+def test_present_state_does_not_add_when_state_is_not_managed() -> None:
+    current = _collection(["a"])
+    doc = {
+        "schemaVersion": 1,
+        "name": "t",
+        "addons": [
+            {
+                "key": "advisory-new",
+                "match": {"manifestId": "new"},
+                "state": "present",
+                "endpoint": {"publicUrl": "https://new.example.invalid/manifest.json"},
+                "manage": [],
+            }
+        ],
+    }
+    assert _plan(current, doc)["operations"] == []
+
+
 # --- fingerprints on the plan ---
 
 

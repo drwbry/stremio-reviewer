@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from functools import cache
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ from jsonschema import Draft202012Validator
 
 from stremioctl.errors import ValidationError
 
-_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
+_SOURCE_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
 _MAX_REPORTED_ERRORS = 25
 
 
@@ -24,9 +25,16 @@ _MAX_REPORTED_ERRORS = 25
 def load_schema(name: str) -> dict[str, Any]:
     """Load and cache the schema document called ``<name>.schema.json``."""
 
-    path = _SCHEMA_DIR / f"{name}.schema.json"
+    filename = f"{name}.schema.json"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        packaged = resources.files("stremioctl").joinpath("schema_data", filename)
+        if packaged.is_file():
+            text = packaged.read_text(encoding="utf-8")
+        else:
+            # Editable/source checkouts keep canonical schemas at repository
+            # root. Hatch maps them into the package in built wheels.
+            text = (_SOURCE_SCHEMA_DIR / filename).read_text(encoding="utf-8")
+        data = json.loads(text)
     except OSError as exc:
         raise ValidationError(f"Schema is not available: {name}") from exc
     except json.JSONDecodeError as exc:  # pragma: no cover - would be a packaging bug
